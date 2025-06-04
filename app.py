@@ -11,8 +11,12 @@ def open_browser():
 
 @app.route('/run_code', methods=['POST'])
 def run_code():
-    # Receives code as JSON and executes it (use with caution).
-    code = request.json.get('code')
+    """Execute Python code sent in the request body."""
+    data = request.get_json(silent=True) or {}
+    code = data.get('code')
+    if code is None:
+        return jsonify({'status': 'No code provided'}), 400
+
     try:
         exec(code, globals())
         return jsonify({'status': 'Code executed'})
@@ -21,10 +25,14 @@ def run_code():
 
 @app.route('/simulate_keystroke', methods=['POST'])
 def simulate_keystroke():
-    # Uses xdotool (make sure it's installed) to simulate a keystroke.
-    key = request.json.get('key')
+    """Simulate a keystroke using xdotool."""
+    data = request.get_json(silent=True) or {}
+    key = data.get('key')
+    if not key:
+        return jsonify({'status': 'No key provided'}), 400
+
     try:
-        subprocess.run(['xdotool', 'key', key])
+        subprocess.run(['xdotool', 'key', key], check=True)
         return jsonify({'status': f'Keystroke "{key}" simulated'})
     except Exception as e:
         return jsonify({'status': 'Error simulating keystroke', 'error': str(e)}), 400
