@@ -140,7 +140,9 @@ python -m layered_agent_full.worker.worker --server http://localhost:8000 --laye
 
 ```bash
 python -m layered_agent_full.worker.bootstrap --server http://localhost:8000 --token <token>
+# add `-v` to show pip logs during installation
 ```
+The bootstrap script prints whether the full or minimal requirements were installed.
 
 ### Environment variables
 
