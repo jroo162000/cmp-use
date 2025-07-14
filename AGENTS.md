@@ -20,9 +20,12 @@ This document describes the distinct “agents” (components/microservices) in 
 * **`planning.py`**: Breaks user goals into schedulable subtasks.
 * **`status_ui/`**: React dashboard for real-time monitoring.
 * **`server.py`**: FastAPI application wiring everything together.
+c6btom-codex/run-all-code-from-the-repo
+=======
 w55z61-codex/run-all-code-from-the-repo
 =======
 * Depends on `cryptography` for encrypting worker results, even in minimal setups.
+main
 main
 
 ## 2. Worker Agent
@@ -42,9 +45,13 @@ main
 
 * **`bootstrap.py`**: Creates venv, installs deps, launches worker.
 * **`skills/`**: Python modules decorated with `@skill`—`core.py`, `network.py`, `sensor.py`, etc.
+c6btom-codex/run-all-code-from-the-repo
+* **`sandbox.py`**: (Optional) Plugin isolation and validation.
+=======
 w55z61-codex/run-all-code-from-the-repo
 * **`sandbox.py`**: (Optional) Plugin isolation and validation.
 =======
+main
 main
 
 ## 3. Planning Agent
@@ -62,10 +69,14 @@ main
 ## 4. Memory Agent
 
 **Role:** Persistent conversation memory.
+c6btom-codex/run-all-code-from-the-repo
+**Location:** `memory.py`
+=======
 w55z61-codex/run-all-code-from-the-repo
 **Location:** `memory.py`
 =======
 **Location:** `memory_utils.py`
+main
 main
 
 ### Responsibilities
@@ -77,10 +88,14 @@ main
 ## 5. Voice I/O Agent
 
 **Role:** Handles speech input/output.
+c6btom-codex/run-all-code-from-the-repo
+**Location:** `voice_io.py`, `tts.py`
+=======
 w55z61-codex/run-all-code-from-the-repo
 **Location:** `voice_io.py`, `tts.py`
 =======
 **Location:** `voice_utils.py`
+main
 main
 
 ### Responsibilities
@@ -92,10 +107,14 @@ main
 ## 6. Sensor Agent
 
 **Role:** Captures real-time environmental data.
+c6btom-codex/run-all-code-from-the-repo
+**Location:** `worker/skills/sensor.py`
+=======
 w55z61-codex/run-all-code-from-the-repo
 **Location:** `worker/skills/sensor.py`
 =======
 **Location:** _(not yet implemented)_
+main
 main
 
 ### Responsibilities
@@ -104,7 +123,10 @@ main
 * **Microphone**: Records audio with `sounddevice` (`record_audio`).
 * Returns raw bytes or arrays for further processing by LLM or UI.
 
+c6btom-codex/run-all-code-from-the-repo
+=======
 w55z61-codex/run-all-code-from-the-repo
+main
 ## 7. Plugin Manager Agent
 
 **Role:** Dynamic plugin loading and version control.
@@ -118,9 +140,12 @@ w55z61-codex/run-all-code-from-the-repo
 
 ## 8. Local Model Agent
 
+c6btom-codex/run-all-code-from-the-repo
+=======
 ## 7. Local Model Agent
 main
 
+main
 **Role:** Provides fallback LLM inference.
 **Location:** `models/local_model.py`
 
@@ -130,10 +155,14 @@ main
 * Implements same `chat()` interface as OpenAI client.
 * Commander selects between local or API-based LLM at runtime.
 
+c6btom-codex/run-all-code-from-the-repo
+## 9. System-Health UI Agent
+=======
 w55z61-codex/run-all-code-from-the-repo
 ## 9. System-Health UI Agent
 =======
 ## 8. System-Health UI Agent
+main
 main
 
 **Role:** Web dashboard for monitoring.
@@ -143,11 +172,15 @@ main
 
 * Displays active Workers, queued tasks, and logs.
 * Streams sensor data (camera snapshots, audio clips).
+c6btom-codex/run-all-code-from-the-repo
+* Allows manual task enqueueing and plugin management.
+=======
 w55z61-codex/run-all-code-from-the-repo
 * Allows manual task enqueueing and plugin management.
 =======
 * Allows manual task enqueueing and plugin management
   (`layered_agent_full/plugin_manager.py`).
+main
 main
 
 ---
