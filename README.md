@@ -99,3 +99,51 @@ python boot_repair.py --voice
 occur if a generated patch is faulty. Review the code and run it only on systems
 where potential changes and restarts are acceptable.
 Before a patch suggested by the language model is applied, the script shows the diff and asks for confirmation (`y`/`n`).
+
+## Layered Agent demo
+
+The `layered_agent_full` folder contains a proof-of-concept Commander/Worker architecture. It can be run independently from the boot-repair scripts.
+
+### Installing requirements
+
+Create or activate a virtual environment and install the dependencies. The full set of packages is in `layered_agent_full/requirements.txt`. A smaller set is available in `layered_agent_full/requirements-minimal.txt`.
+
+```bash
+pip install -r layered_agent_full/requirements.txt
+# or
+pip install -r layered_agent_full/requirements-minimal.txt
+```
+
+### Starting the Commander
+
+Run the FastAPI server:
+
+```bash
+python -m layered_agent_full.commander.server
+```
+
+The server prints the registration token required by workers.
+
+### Launching a Worker
+
+Start a worker and point it at the commander:
+
+```bash
+python -m layered_agent_full.worker.worker --server http://localhost:8000 --layer L-2 --token <token>
+```
+
+`bootstrap.py` can also be used to create a dedicated virtual environment before launching:
+
+```bash
+python -m layered_agent_full.worker.bootstrap --server http://localhost:8000 --token <token>
+```
+
+### Environment variables
+
+Set `OPENAI_API_KEY` so the commander can access the language model. Workers use `VAULT_PASSPHRASE` if defined to encrypt task results. These values may also be stored in `~/.config/agent/secrets.toml`:
+
+```toml
+openai_api_key = "YOUR_OPENAI_KEY"
+vault_passphrase = "optional passphrase"
+```
+
