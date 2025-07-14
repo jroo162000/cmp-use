@@ -12,18 +12,18 @@ def open_browser():
     return jsonify({'status': 'Browser opened'})
 
 
+
+# Disabled remote code execution endpoint for security.
 @app.route('/run_code', methods=['POST'])
 def run_code():
-    # Receives code as JSON and executes it (use with caution).
-    code = request.json.get('code')
-    try:
-        exec(code, globals())
-        return jsonify({'status': 'Code executed'})
-    except Exception as e:
-        return jsonify({
-            'status': 'Error executing code',
-            'error': str(e),
-        }), 400
+    """Endpoint removed to prevent arbitrary code execution."""
+    return (
+        jsonify({
+            'status': 'Execution disabled',
+            'error': 'Remote code execution is not allowed.'
+        }),
+        403,
+    )
 
 
 @app.route('/simulate_keystroke', methods=['POST'])
