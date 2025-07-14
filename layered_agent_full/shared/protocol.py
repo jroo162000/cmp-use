@@ -1,5 +1,6 @@
+"""Protocol definitions for chat messages and function calls."""
 from pydantic import BaseModel, Field
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
 class ChatMessage(BaseModel):
     role: str
@@ -9,14 +10,14 @@ class FunctionCall(BaseModel):
     name: str
     arguments: Dict[str, Any] = Field(default_factory=dict)
 
-# Build OpenAI function schema from registered skills
 
 def make_skill_schema(skills: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    schema = []
-    for s in skills.values():
-        schema.append({
-            'name': s.get('name'),
-            'description': s.get('description', ''),
-            'parameters': s.get('parameters', {'type': 'object', 'properties': {}}),
-        })
-    return schema
+    """Return OpenAI function-calling schema list from skill metadata dict."""
+    return [
+        {
+            "name":        meta["name"],
+            "description": meta.get("description", ""),
+            "parameters":  meta.get("parameters", {"type": "object", "properties": {}}),
+        }
+        for meta in skills.values()
+    ]
