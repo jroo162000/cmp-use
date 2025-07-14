@@ -1,13 +1,21 @@
-import sqlite3
-import json
-import secrets
+from __future__ import annotations
+import sqlite3, json, secrets
 from datetime import datetime
+6vfos9-codex/run-all-code-from-the-repo
+from pathlib import Path
+from typing import Any, Dict, List
+
+from layered_agent_full.shared.protocol import ChatMessage, make_skill_schema
+
+DB_PATH = Path(__file__).parents[2] / "commander" / "tasks.db"
+=======
 from typing import Dict, List, Any
 from pathlib import Path
 from layered_agent_full.shared.protocol import make_skill_schema, ChatMessage
 
 # Use a path relative to this file so the DB is found regardless of CWD
 DB_PATH = Path(__file__).resolve().parent.parent / "commander" / "tasks.db"
+main
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -43,20 +51,19 @@ class CommanderState:
         )
         self.conn.commit()
 
-    def audit(self, action: str, details: Dict[str, Any]):
-        c = self.conn.cursor()
-        c.execute(
-            "INSERT INTO audit (ts, action, details) VALUES (?,?,?)",
+    def _audit(self, action: str, details: Dict[str, Any]):
+        self.conn.execute(
+            "INSERT INTO audit VALUES (?,?,?)",
             (datetime.utcnow().isoformat(), action, json.dumps(details)),
         )
         self.conn.commit()
 
     def register_worker(self, wid: str, info: Dict[str, Any]):
         self.workers[wid] = info
-        self.audit('register_worker', {'worker_id': wid, 'info': info})
-        for s in info.get('skills', []):
-            self.skills[s['name']] = s
+        for s in info.get("skills", []):
+            self.skills[s["name"]] = s
         self.function_schema = make_skill_schema(self.skills)
+        self._audit("register_worker", {"worker_id": wid})
 
     def get_worker_with_skill(self, name: str) -> Any:
         for wid, info in self.workers.items():
@@ -66,7 +73,7 @@ class CommanderState:
 
     def enqueue(self, worker_id: str, func_call: Any) -> str:
         task_id = secrets.token_hex(8)
-        self.audit(
+        self._audit(
             'enqueue',
             {
                 'task_id': task_id,
@@ -134,7 +141,7 @@ class CommanderState:
         return tasks
 
     def complete(self, task_id: str, result: Any):
-        self.audit('complete', {'task_id': task_id, 'result': result})
+        self._audit('complete', {'task_id': task_id, 'result': result})
         self.history.append(
             ChatMessage(role='function', content=json.dumps({'task_id': task_id, 'result': result}))
         )
