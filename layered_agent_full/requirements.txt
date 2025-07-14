@@ -10,3 +10,9 @@ gitpython>=3.1.43
 partclone>=0.3.23 ; sys_platform != 'win32'
 toml>=0.10
 python-multipart>=0.0.6
+w55z61-codex/run-all-code-from-the-repo
+opencv-python-headless>=4.10
+sounddevice>=0.4.6
+numpy>=1.24
+=======
+main

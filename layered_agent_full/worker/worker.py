@@ -9,6 +9,10 @@ logging.basicConfig(filename=L/"worker.log",level=logging.INFO,format="%(asctime
 def discover():
     sk={}
     for f in (Path(__file__).parent/"skills").glob("*.py"):
+w55z61-codex/run-all-code-from-the-repo
+        if f.stem=="__init__":continue
+        spec=importlib.util.spec_from_file_location(f.stem,f);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+=======
         if f.stem=="__init__":
             continue
         spec=importlib.util.spec_from_file_location(
@@ -17,6 +21,7 @@ def discover():
         )
         m=importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)
+main
         for n,fn in inspect.getmembers(m,inspect.isfunction):
             if getattr(fn,"_is_skill",False): sk[n]=fn
     return sk

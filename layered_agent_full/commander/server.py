@@ -1,10 +1,24 @@
-import os, toml, pathlib, uuid, json
-from fastapi import FastAPI, Body, HTTPException, UploadFile, File, Header, Response
-from pydantic import BaseModel
-import openai
+import os, toml, pathlib, uuid, json, sys
+
+# When executed directly ``python commander/server.py`` the package root is not
+# on ``sys.path``. Adjust the path so absolute imports under ``layered_agent_full``
+# work the same as when running as a module.
+if __package__ in (None, ""):
+    # Add the repository root so ``layered_agent_full`` package can be imported
+    sys.path.append(str(pathlib.Path(__file__).resolve().parents[2]))
+
 from layered_agent_full.shared.state import CommanderState
 from layered_agent_full.shared.protocol import ChatMessage, FunctionCall
 from layered_agent_full.shared.utils import aes_decrypt
+from fastapi import FastAPI, Body, HTTPException, UploadFile, File, Header, Response
+from pydantic import BaseModel
+import openai
+w55z61-codex/run-all-code-from-the-repo
+=======
+from layered_agent_full.shared.state import CommanderState
+from layered_agent_full.shared.protocol import ChatMessage, FunctionCall
+from layered_agent_full.shared.utils import aes_decrypt
+main
 
 app = FastAPI()
 state = CommanderState()
@@ -108,4 +122,4 @@ if __name__=="__main__":
     p.add_argument("--port",type=int,default=8000)
     a=p.parse_args()
     print(f"Listening on {a.port}, token={state.bearer_token}")
-    uvicorn.run("commander.server:app", host="0.0.0.0", port=a.port)
+    uvicorn.run("layered_agent_full.commander.server:app", host="0.0.0.0", port=a.port)
