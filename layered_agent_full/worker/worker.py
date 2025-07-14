@@ -7,8 +7,7 @@ logging.basicConfig(filename=L/"worker.log",level=logging.INFO,format="%(asctime
 # helpers
 def discover():
     sk={}
-    # ensure glob runs against the skills directory path
-    for f in (Path(__file__).parent / "skills").glob("*.py"):
+    for f in (Path(__file__).parent/"skills").glob("*.py"):
         if f.stem=="__init__":continue
         spec=importlib.util.spec_from_file_location(f.stem,f);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
         for n,fn in inspect.getmembers(m,inspect.isfunction):
