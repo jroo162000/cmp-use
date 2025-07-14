@@ -16,6 +16,7 @@ from sklearn.ensemble import RandomForestClassifier
 import pandas as pd
 from dotenv import load_dotenv
 from pyvirtualdisplay import Display
+import atexit
 
 # If you want local LLM usage:
 from transformers import AutoTokenizer
@@ -74,11 +75,21 @@ logger.debug("Logger initialized successfully.")
 
 # Start a virtual display if no DISPLAY environment variable is present
 display = None
+
+def _stop_virtual_display():
+    if display:
+        try:
+            display.stop()
+            logger.debug("Stopped virtual X display.")
+        except Exception as e:
+            logger.warning(f"Failed to stop virtual display: {e}")
+
 if not os.environ.get("DISPLAY"):
     try:
         display = Display()
         display.start()
         logger.debug("Started virtual X display for headless environment.")
+        atexit.register(_stop_virtual_display)
     except Exception as e:
         logger.warning(f"Failed to start virtual display: {e}")
 
