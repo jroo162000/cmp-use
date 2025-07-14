@@ -76,6 +76,16 @@ logging.basicConfig(
 logger = logging.getLogger("boot_repair_automation")
 logger.debug("Logger initialized successfully.")
 
+# Start a virtual display if no DISPLAY environment variable is present
+display = None
+if not os.environ.get("DISPLAY"):
+    try:
+        display = Display()
+        display.start()
+        logger.debug("Started virtual X display for headless environment.")
+    except Exception as e:
+        logger.warning(f"Failed to start virtual display: {e}")
+
 # -------------- LLM / DEEPSEEK SETUP --------------
 try:
     if LLM is not None:
