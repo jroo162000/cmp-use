@@ -11,6 +11,10 @@ pip install -r requirements.txt
 # or for a slimmer set
 pip install -r requirements-minimal.txt
 ```
+Installing the full requirements fetches some packages from GitHub (for
+example the `whisper` repository), so it needs outbound network
+connectivity. If your environment restricts internet access, install the
+minimal requirements instead or skip those optional capabilities.
 
 Optional sensor features (camera, microphone) require extra packages:
 
