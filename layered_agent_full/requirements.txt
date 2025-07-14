@@ -8,3 +8,8 @@ whisper @ git+https://github.com/openai/whisper.git
 cryptography>=42.0.5
 gitpython>=3.1.43
 partclone>=0.3.23 ; sys_platform != 'win32'
+toml>=0.10
+python-multipart>=0.0.6
+opencv-python-headless>=4.10
+sounddevice>=0.4.6
+numpy>=1.24
