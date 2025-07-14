@@ -34,6 +34,25 @@ pip install -r requirements-gpu.txt  # optional
 The packages include `scikit-learn`, `transformers` and other heavy
 dependencies, so installation may take some time.
 
+## Environment variables and system packages
+
+Some features require additional settings and packages.
+
+- `DEEPSEEK_API_KEY` must be defined so the assistant can access the language model. Export it before running the scripts:
+
+```bash
+export DEEPSEEK_API_KEY=your_token_here
+```
+
+- The utilities `patch`, `xdotool` and `Xvfb` must be installed. On Debian/Ubuntu systems run:
+
+```bash
+sudo apt-get install patch xdotool xvfb
+```
+
+On other distributions use the appropriate package manager such as `dnf` or `pacman`.
+
+
 ## Running the scripts
 
 ### `app.py`
