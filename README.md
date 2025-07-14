@@ -132,6 +132,10 @@ pip install -r layered_agent_full/requirements.txt
 # or
 pip install -r layered_agent_full/requirements-minimal.txt
 ```
+The full requirements file installs optional packages such as
+`whisper` directly from GitHub. This step requires outbound network
+access. When network access is limited, use the minimal requirements or
+skip features that depend on those extras.
 Commander uses the `cryptography` package to encrypt worker results, so this
 dependency is included in the minimal requirements.
 Optional sensor features require extra packages that are not installed
