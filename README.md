@@ -1,166 +1,66 @@
-````markdown
-# Layered Chat-Driven Self-Healing Agent
+# Boot Repair Assistant
 
-This repository contains a layered, chat-driven autonomous agent with separate Commander and Worker components. It’s designed to run in rescue environments (Ubuntu shell, Windows PE) and self-heal by diagnosing and repairing boot issues, managing dependencies, and dynamically extending its own capabilities.
+This repository contains two Python demonstration scripts.
 
-## Directory Layout
+## Scripts
 
-```bash
-layered_agent/
-├── requirements.txt             # full dependencies
-├── requirements-minimal.txt     # fallback dependencies
-├── commander/
-│   └── server.py                # FastAPI chat interface & task router
-├── shared/
-│   ├── utils.py                 # secrets loading, AES decrypt
-│   ├── protocol.py              # Pydantic models for chat & function calls
-│   └── state.py                 # CommanderState with task queues & history
-├── worker/
-│   ├── bootstrap.py             # layered venv setup & worker launcher
-│   ├── worker.py                # skill discovery, registration, polling loop
-│   └── skills/
-│       ├── core.py              # basic run_shell, download, install_package
-│       ├── linux_diag.py        # collect_partition_info, collect_efi_status
-│       ├── image_helper.py      # create_disk_image
-│       ├── hardware_diag.py     # smart_status
-│       ├── windows_boot.py      # fix_bootloader
-│       └── qb_utils.py          # QuickBooks backup/compress utilities
-└── README.md                    # this file
-````
+- **`app.py`** – A minimal Flask application. It exposes endpoints to open a
+  browser and to simulate a keystroke using `xdotool`. An earlier endpoint for
+  executing arbitrary code has been purposely disabled.
+- **`boot_repair.py`** – An experimental self-healing assistant that attempts to
+  repair boot issues. It can apply patches to its own source code based on
+  suggestions from a language model. Because it modifies itself at run time,
+  **use it only in a controlled or disposable environment.**
 
-## Prerequisites
+## Installation
 
-* **Python ≥ 3.9** (3.11 recommended)
-* **Git**
-* **Commander host**:
-
-  * ChromeDriver in `PATH` (for headless browser skills)
-* **Windows Worker**:
-
-  * Visual C++ Build Tools (for pip wheels)
-* **Linux Worker**:
-
-  * `build-essential` (for pip wheels)
-* **Network access**:
-
-  * Worker must reach Commander (`:8000` or chosen port)
-  * Commander must reach OpenAI API (for GPT calls)
-
-## Setup
-
-1. **Clone or unzip** this repo on your Commander machine.
-2. **Install full dependencies**:
-
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
-   ```
-3. **Configure OpenAI key**:
-
-   * Copy `commander/secrets.toml.example` to `~/.config/agent/secrets.toml`
-   * Edit it to include:
-
-     ```toml
-     openai_api_key = "sk-…"
-     ```
-
-## Running the Commander
+Python 3.9 or newer is recommended. Create a virtual environment and install the
+dependencies listed in `requirements.txt`:
 
 ```bash
-source .venv/bin/activate
-python commander/server.py --port 8000
+python -m venv .venv
+source .venv/bin/activate  # On Windows use .venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-You’ll see:
+The packages include `scikit-learn`, `transformers` and other heavy
+dependencies, so installation may take some time.
 
-```
-Commander listening on port 8000, bearer token: <YOUR_TOKEN>
-```
+## Running the scripts
 
-Keep that token handy for Workers.
+### `app.py`
 
-## Running a Worker
-
-On each target (Linux or Windows PE):
-
-1. **Ensure** Python is installed.
-2. **Clone** or copy `worker/` and `requirements-minimal.txt` to the target.
-3. **Export** the token:
-
-   ```bash
-   export AGENT_TOKEN=<YOUR_TOKEN>
-   ```
-4. **Run bootstrap**:
-
-   ```bash
-   python worker/bootstrap.py --server http://<COMMANDER_HOST>:8000 --token $AGENT_TOKEN
-   ```
-
-This creates a venv, installs deps, registers the Worker, and begins polling.
-
-## Using the Agent
-
-### Chat Interface
-
-Send natural‐language commands to the Commander’s `/chat` endpoint:
+Start the Flask server:
 
 ```bash
-curl -X POST http://<COMMANDER_HOST>:8000/chat \
-     -H "Content-Type: application/json" \
-     -d '{"message":"run_shell uname -a"}'
+python app.py
 ```
 
-* **Commander** enqueues the `run_shell` task.
-* **Worker** executes it and reports back.
-* **Follow-up**:
+The server listens on port 5000. Available endpoints:
 
-  ```bash
-  curl -X POST http://<COMMANDER_HOST>:8000/chat \
-       -H "Content-Type: application/json" \
-       -d '{"message":"what did run_shell return?"}'
-  ```
+- `POST /open_browser` – opens the default browser at Google.
+- `POST /simulate_keystroke` – send a key press, e.g. `{ "key": "Return" }`.
+- `POST /run_code` – returns HTTP 403 because remote code execution is disabled.
 
-### Status & Health
+### `boot_repair.py`
 
-Check Worker health and registered skills:
+This script launches an interactive console for diagnosing and repairing boot
+issues. It also contains logic to modify and patch its own code. For safety run
+it inside a VM or other sandbox.
 
 ```bash
-curl http://<COMMANDER_HOST>:8000/status
+python boot_repair.py
 ```
 
-### File Uploads
-
-You can also upload files (e.g., custom scripts) via:
+You can pass `--testmode` to perform a quick start-up test without entering the
+full repair loop:
 
 ```bash
-curl -X POST http://<COMMANDER_HOST>:8000/upload \
-     -F "file=@script.ps1"
+python boot_repair.py --testmode
 ```
 
-## Extending with New Skills
+## Safety notice
 
-Add a module in `worker/skills/`, e.g.:
-
-```python
-from skills.core import skill
-
-@skill
-def my_new_skill(param: str) -> dict:
-    """Does something useful."""
-    # your code...
-    return {"result": "done"}
-```
-
-Restart the Worker; the new skill is auto-discovered.
-
-## Advanced Tips
-
-* **Session persistence**: run under `tmux` or `screen` to keep processes alive across SSH sessions.
-* **Multi-OS flow**: Workers register their OS (`linux` or `windows`); Commander routes tasks accordingly.
-* **Safety rails**: destructive actions prompt for confirmation if `confirm_destructive = true` in `agent.toml`.
-* **Plugin versioning**: plugins auto-committed to `plugins/.git` for rollback and audit.
-
----
-
-Happy automating! Let me know if you need more details or further customization.
+`boot_repair.py` performs patch-based self modification. Unintended behavior can
+occur if a generated patch is faulty. Review the code and run it only on systems
+where potential changes and restarts are acceptable.
