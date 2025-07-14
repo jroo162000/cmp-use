@@ -55,7 +55,7 @@ This document describes the distinct “agents” (components/microservices) in 
 ## 4. Memory Agent
 
 **Role:** Persistent conversation memory.
-**Location:** `memory.py`
+**Location:** `memory_utils.py`
 
 ### Responsibilities
 
@@ -66,7 +66,7 @@ This document describes the distinct “agents” (components/microservices) in 
 ## 5. Voice I/O Agent
 
 **Role:** Handles speech input/output.
-**Location:** `voice_io.py`, `tts.py`
+**Location:** `voice_utils.py`
 
 ### Responsibilities
 
@@ -77,7 +77,7 @@ This document describes the distinct “agents” (components/microservices) in 
 ## 6. Sensor Agent
 
 **Role:** Captures real-time environmental data.
-**Location:** `worker/skills/sensor.py`
+**Location:** _(not yet implemented)_
 
 ### Responsibilities
 
@@ -88,7 +88,7 @@ This document describes the distinct “agents” (components/microservices) in 
 ## 7. Plugin Manager Agent
 
 **Role:** Dynamic plugin loading and version control.
-**Location:** `plugin_manager.py`, `worker/sandbox.py`
+**Location:** _(not yet implemented)_
 
 ### Responsibilities
 
