@@ -3,6 +3,7 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 import os
 import subprocess
+import shutil
 import asyncio
 import psutil
 import threading
@@ -197,6 +198,11 @@ def apply_patch_changes(diff_text: str) -> str:
     if not diff_text.strip():
         logger.info("No diff returned. No changes made.")
         return "No changes proposed."
+
+    if shutil.which("patch") is None:
+        msg = "The 'patch' command is required but not found. Please install it."
+        logger.error(msg)
+        return msg
 
     # Read the current code lines
     try:
