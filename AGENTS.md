@@ -104,7 +104,8 @@ This document describes the distinct “agents” (components/microservices) in 
 
 * Displays active Workers, queued tasks, and logs.
 * Streams sensor data (camera snapshots, audio clips).
-* Allows manual task enqueueing and plugin management.
+* Allows manual task enqueueing and plugin management
+  (`layered_agent_full/plugin_manager.py`).
 
 ---
 
