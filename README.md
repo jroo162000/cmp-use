@@ -119,6 +119,8 @@ pip install -r layered_agent_full/requirements.txt
 # or
 pip install -r layered_agent_full/requirements-minimal.txt
 ```
+Commander uses the `cryptography` package to encrypt worker results, so this
+dependency is included in the minimal requirements.
 Optional sensor features require extra packages that are not installed
 by default. Install them manually if needed:
 

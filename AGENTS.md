@@ -20,6 +20,7 @@ This document describes the distinct “agents” (components/microservices) in 
 * **`planning.py`**: Breaks user goals into schedulable subtasks.
 * **`status_ui/`**: React dashboard for real-time monitoring.
 * **`server.py`**: FastAPI application wiring everything together.
+* Depends on `cryptography` for encrypting worker results, even in minimal setups.
 
 ## 2. Worker Agent
 
