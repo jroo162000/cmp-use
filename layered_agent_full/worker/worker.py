@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse,importlib.util,inspect,sys,platform,time,traceback,base64,hashlib,json,requests,os,logging
 from pathlib import Path
+from layered_agent_full.plugin_manager import PluginManager
 # logging
 L=Path.home()/".agent"/"logs";L.mkdir(parents=True,exist_ok=True)
 logging.basicConfig(filename=L/"worker.log",level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s")
@@ -23,9 +24,21 @@ def encrypt(o,p):
     from cryptography.fernet import Fernet
     return Fernet(base64.urlsafe_b64encode(key)).encrypt(r).decode()
 
+# plugin support
+PM=PluginManager()
+skills={}
+
+def refresh_skills(pm:PluginManager=PM):
+    """Reload built-in and plugin skills."""
+    global skills
+    base=discover()
+    base.update(pm.discover_plugins())
+    skills=base
+    return skills
+
 # main
 parser=argparse.ArgumentParser();parser.add_argument("--server",required=True);parser.add_argument("--layer",required=True,choices=["L-2","L-3"]);parser.add_argument("--token",required=True);args=parser.parse_args()
-skills=discover();man=manifest(skills)
+skills=refresh_skills();man=manifest(skills)
 # register
 try:
     r=requests.post(f"{args.server}/register",json={"token":args.token,"os":platform.system().lower(),"layer":args.layer,"skills":man},timeout=15)
