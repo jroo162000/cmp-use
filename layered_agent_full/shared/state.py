@@ -1,21 +1,16 @@
 from __future__ import annotations
-import sqlite3, json, secrets
+import sqlite3
+import json
+import secrets
 from datetime import datetime
-6vfos9-codex/run-all-code-from-the-repo
 from pathlib import Path
 from typing import Any, Dict, List
 
 from layered_agent_full.shared.protocol import ChatMessage, make_skill_schema
 
-DB_PATH = Path(__file__).parents[2] / "commander" / "tasks.db"
-=======
-from typing import Dict, List, Any
-from pathlib import Path
-from layered_agent_full.shared.protocol import make_skill_schema, ChatMessage
-
-# Use a path relative to this file so the DB is found regardless of CWD
+# Use a path relative to this file so the DB is found regardless of CWD.
+# The commander/planning module stores tasks in the same location.
 DB_PATH = Path(__file__).resolve().parent.parent / "commander" / "tasks.db"
-main
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
