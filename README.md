@@ -86,6 +86,13 @@ full repair loop:
 python boot_repair.py --testmode
 ```
 
+To enable experimental voice interaction, run with `--voice` (requires
+`SpeechRecognition` and `pyttsx3`):
+
+```bash
+python boot_repair.py --voice
+```
+
 ## Safety notice
 
 `boot_repair.py` performs patch-based self modification. Unintended behavior can

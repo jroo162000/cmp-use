@@ -7,3 +7,5 @@ python-dotenv
 pyvirtualdisplay
 openai
 transformers
+pyttsx3
+SpeechRecognition
