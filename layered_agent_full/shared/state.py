@@ -1,41 +1,103 @@
-import secrets, json
-from typing import Dict, List
+import sqlite3
+import json
+import secrets
+from datetime import datetime
+from typing import Dict, List, Any
 from shared.protocol import make_skill_schema, ChatMessage
+
+DB_PATH = './commander/tasks.db'
+
 
 class CommanderState:
     def __init__(self):
-        self.history=[]
-        self.workers={}
-        self.skills={}
-        self.tasks={}
-        self.pending={}
-        self.bearer_token=secrets.token_hex(16)
-        self.function_schema=[]
+        self.history: List[ChatMessage] = []
+        self.workers: Dict[str, Dict[str, Any]] = {}
+        self.skills: Dict[str, Dict[str, Any]] = {}
+        self.bearer_token: str = secrets.token_hex(16)
+        self.function_schema: List[Dict[str, Any]] = []
+        self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        self._init_db()
 
-    def register_worker(self,wid,info):
-        self.workers[wid]=info
-        self.tasks.setdefault(wid,[])
-        for s in info.get("skills",[]): self.skills[s["name"]]=s
-        self.function_schema=make_skill_schema(self.skills)
+    def _init_db(self):
+        c = self.conn.cursor()
+        c.execute(
+            """
+        CREATE TABLE IF NOT EXISTS audit (
+            ts TEXT,
+            action TEXT,
+            details TEXT
+        )"""
+        )
+        self.conn.commit()
 
-    def get_worker_with_skill(self,name):
-        for wid,inf in self.workers.items():
-            if any(s["name"]==name for s in inf.get("skills",[])): return wid
+    def audit(self, action: str, details: Dict[str, Any]):
+        c = self.conn.cursor()
+        c.execute(
+            "INSERT INTO audit (ts, action, details) VALUES (?,?,?)",
+            (datetime.utcnow().isoformat(), action, json.dumps(details)),
+        )
+        self.conn.commit()
+
+    def register_worker(self, wid: str, info: Dict[str, Any]):
+        self.workers[wid] = info
+        self.audit('register_worker', {'worker_id': wid, 'info': info})
+        for s in info.get('skills', []):
+            self.skills[s['name']] = s
+        self.function_schema = make_skill_schema(self.skills)
+
+    def get_worker_with_skill(self, name: str) -> Any:
+        for wid, info in self.workers.items():
+            if any(s['name'] == name for s in info.get('skills', [])):
+                return wid
         return None
 
-    def enqueue(self,wid,fc):
-        tid=secrets.token_hex(8)
-        task={"id":tid,"function":{"name":fc.name,"arguments":fc.arguments}}
-        self.tasks.setdefault(wid,[]).append(task)
-        self.pending[tid]={'worker':wid,'function':fc}
-        return tid
+    def enqueue(self, worker_id: str, func_call: Any) -> str:
+        task_id = secrets.token_hex(8)
+        self.audit(
+            'enqueue',
+            {
+                'task_id': task_id,
+                'worker_id': worker_id,
+                'function': getattr(func_call, 'name', ''),
+                'arguments': getattr(func_call, 'arguments', {}),
+            },
+        )
+        return task_id
 
-    def fetch_tasks(self,wid): return self.tasks.pop(wid,[])
+    def fetch_tasks(self, worker_id: str) -> List[Dict[str, Any]]:
+        return []
 
-    def complete(self,tid,result):
-        fc=self.pending.pop(tid)['function']
-        self.history.append(ChatMessage(role="function",content=json.dumps({"task_id":tid,"result":result})))
-        self.history=self.history[-20:]
+    def complete(self, task_id: str, result: Any):
+        self.audit('complete', {'task_id': task_id, 'result': result})
+        self.history.append(
+            ChatMessage(role='function', content=json.dumps({'task_id': task_id, 'result': result}))
+        )
+        self.history = self.history[-20:]
 
-    def snapshot(self):
-        return {"workers":list(self.workers.values()),"skills":list(self.skills),"bearer_token":self.bearer_token,"layer":"L-3"}
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            'workers': list(self.workers.values()),
+            'skills': list(self.skills.keys()),
+            'bearer_token': self.bearer_token,
+            'layer': 'L-3',
+        }
+
+
+# Test cases for planning and shared modules
+if __name__ == '__main__':
+    print('Testing shared.protocol.make_skill_schema...')
+    from shared.protocol import make_skill_schema, ChatMessage
+
+    schema = make_skill_schema([{'name': 'foo', 'description': 'desc', 'parameters': {}}])
+    print('Schema:', schema)
+    msg = ChatMessage(role='user', content='hello')
+    print('ChatMessage:', msg)
+
+    print('\nTesting Planner...')
+    from commander.planning import Planner
+
+    planner = Planner()
+    tid = planner.plan('Step one. Step two.')
+    print('Generated task id:', tid)
+    due = planner.fetch_due()
+    print('Due tasks:', due)
