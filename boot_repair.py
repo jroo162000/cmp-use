@@ -21,6 +21,8 @@ import pandas as pd
 import joblib
 from dotenv import load_dotenv
 from pyvirtualdisplay import Display
+import nest_asyncio
+nest_asyncio.apply()
 
 # If you want local LLM usage:
 from transformers import AutoTokenizer, pipeline
@@ -309,6 +311,9 @@ def apply_solution(solution: str) -> bool:
 class BootRepairUI:
     def __init__(self, agent):
         self.agent = agent
+        self.logger = logging.getLogger("boot_repair_ui")
+        self.logger.warning("tkinter UI is included but may not run directly in standard Colab cells.")
+        print("--- NOTE: The graphical UI is not functional in this Colab cell. ---")
         self.root = tk.Tk()
         self.root.title("Patch-based Boot Repair UI")
         self.root.geometry("400x200")
@@ -408,6 +413,8 @@ class BootRepairLogic:
                 return await self._repair_kernel_panic_rootfs()
             elif issue == "filesystem_corrupt":
                 return await self._repair_filesystem_corrupt()
+            elif issue == "grub_device_error":
+                return await self._repair_grub_device_error()
             else:
                 self.logger.warning(f"No direct logic for issue: {issue}")
                 self.process_status = "failed"
@@ -423,28 +430,17 @@ class BootRepairLogic:
 
     async def _repair_kernel_panic_rootfs(self) -> bool:
         try:
-            self.logger.info("Repairing kernel panic rootfs...")
-            self.current_process = subprocess.Popen(["mkinitcpio", "-P"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            self.current_process.wait()
-            if self.current_process.returncode != 0:
-                raise subprocess.CalledProcessError(self.current_process.returncode, self.current_process.args)
-
-            self.current_process = subprocess.Popen(["grub-mkconfig", "-o", "/boot/grub/grub.cfg"],
-                                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            self.current_process.wait()
-            if self.current_process.returncode != 0:
-                raise subprocess.CalledProcessError(self.current_process.returncode, self.current_process.args)
+            print("--- SIMULATING: Running mkinitcpio -P ---")
+            self.logger.info("Simulating: mkinitcpio -P")
+            await asyncio.sleep(1)
+            print("--- SIMULATION COMPLETE: mkinitcpio -P ---")
+            print("--- SIMULATING: Running grub-mkconfig -o /boot/grub/grub.cfg ---")
+            self.logger.info("Simulating: grub-mkconfig -o /boot/grub/grub.cfg")
+            await asyncio.sleep(1)
+            print("--- SIMULATION COMPLETE: grub-mkconfig -o /boot/grub/grub.cfg ---")
 
             self.process_status = "completed"
             return True
-        except subprocess.CalledProcessError as e:
-            err_msg = f"Command failed: {e.cmd}, Output: {e.output}, Error: {e.stderr}"
-            self.logger.error(err_msg)
-            self.process_status = "failed"
-            solution = query_deepseek(err_msg)
-            if apply_solution(solution):
-                return await self._repair_kernel_panic_rootfs()
-            return False
         except Exception as e:
             err_msg = f"Unexpected error: {e}"
             self.logger.error(err_msg)
@@ -455,13 +451,47 @@ class BootRepairLogic:
             return False
 
     async def _repair_filesystem_corrupt(self) -> bool:
-        self.logger.info("Repairing filesystem corruption (stub).")
-        self.process_status = "completed"
-        return True
+        try:
+            print("--- SIMULATING: Running fsck /dev/sda1 -y ---")
+            self.logger.info("Simulating: fsck /dev/sda1 -y")
+            await asyncio.sleep(2)
+            print("--- SIMULATION COMPLETE: fsck /dev/sda1 -y ---")
+            self.process_status = "completed"
+            return True
+        except Exception as e:
+            err_msg = f"Unexpected error: {e}"
+            self.logger.error(err_msg)
+            self.process_status = "failed"
+            solution = query_deepseek(err_msg)
+            if apply_solution(solution):
+                return await self._repair_filesystem_corrupt()
+            return False
+
+    async def _repair_grub_device_error(self) -> bool:
+        try:
+            print("--- SIMULATING: Running grub-install /dev/sda ---")
+            self.logger.info("Simulating: grub-install /dev/sda")
+            await asyncio.sleep(2)
+            print("--- SIMULATION COMPLETE: grub-install /dev/sda ---")
+            print("--- SIMULATING: Running update-grub ---")
+            self.logger.info("Simulating: update-grub")
+            await asyncio.sleep(1)
+            print("--- SIMULATION COMPLETE: update-grub ---")
+            self.process_status = "completed"
+            return True
+        except Exception as e:
+            err_msg = f"Unexpected error: {e}"
+            self.logger.error(err_msg)
+            self.process_status = "failed"
+            solution = query_deepseek(err_msg)
+            if apply_solution(solution):
+                return await self._repair_grub_device_error()
+            return False
 
 class DefaultProcessManager:
     def terminate_all(self):
         logger.info("Terminating all processes... (Placeholder)")
+        print("--- SIMULATING: Terminating all processes ---")
 
 class EnhancedAutomationManager:
     def __init__(self):
@@ -508,16 +538,16 @@ class EnhancedAutomationManager:
 
     def _get_system_state(self) -> Dict[str, Any]:
         try:
-            cpu_percent = psutil.cpu_percent()
-            memory_percent = psutil.virtual_memory().percent
-            disk_free_gb = psutil.disk_usage('/').free / (1024 ** 3)
-            efi_mounted = os.path.exists('/boot/efi')
-            return {
-                "cpu_percent": cpu_percent,
-                "memory_percent": memory_percent,
-                "disk_free_gb": disk_free_gb,
-                "efi_mounted": efi_mounted
+            print("--- SIMULATING: Getting system state ---")
+            self.logger.info("Getting system state (simulated)...")
+            simulated_state = {
+                "cpu_percent": psutil.cpu_percent(),
+                "memory_percent": psutil.virtual_memory().percent,
+                "disk_free_gb": psutil.disk_usage('/').free / (1024 ** 3),
+                "efi_mounted": os.path.exists('/boot/efi')
             }
+            print(f"--- SIMULATED STATE: {simulated_state} ---")
+            return simulated_state
         except Exception as e:
             self.logger.error(f"Failed to get system state: {e}")
             return {}
