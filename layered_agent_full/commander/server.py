@@ -13,6 +13,18 @@ from layered_agent_full.shared.utils import aes_decrypt
 from fastapi import FastAPI, Body, HTTPException, UploadFile, File, Header, Response
 from pydantic import BaseModel
 import openai
+6vfos9-codex/run-all-code-from-the-repo
+=======
+c6btom-codex/run-all-code-from-the-repo
+=======
+w55z61-codex/run-all-code-from-the-repo
+=======
+from layered_agent_full.shared.state import CommanderState
+from layered_agent_full.shared.protocol import ChatMessage, FunctionCall
+from layered_agent_full.shared.utils import aes_decrypt
+main
+main
+main
 
 app = FastAPI()
 state = CommanderState()
@@ -85,10 +97,18 @@ def get_task(worker_id: str, authorization: str|None=Header(None)):
 def post_result(task_id:str, body:dict=Body(...), authorization:str|None=Header(None)):
     if authorization!=state.bearer_token: raise HTTPException(401)
     payload=body.get("payload")
-    vault=toml.loads((pathlib.Path.home()/".config"/"agent"/"secrets.toml").read_text()).get("vault_passphrase")
-    try:
-        result=json.loads(aes_decrypt(payload.encode(), vault))
-    except:
+    cfg_path = pathlib.Path.home()/".config"/"agent"/"secrets.toml"
+    if cfg_path.exists():
+        vault = toml.loads(cfg_path.read_text()).get("vault_passphrase")
+    else:
+        vault = None
+
+    if vault:
+        try:
+            result=json.loads(aes_decrypt(payload.encode(), vault))
+        except Exception:
+            result=json.loads(payload)
+    else:
         result=json.loads(payload)
     state.complete(task_id, result)
     return {"status":"ok"}
