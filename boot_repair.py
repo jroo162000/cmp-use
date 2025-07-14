@@ -621,21 +621,22 @@ def main():
         logger.info("Running in testmode, exit 0.")
         sys.exit(0)
 
-    try:
-        automation_manager = EnhancedAutomationManager()
+    while True:
+        try:
+            automation_manager = EnhancedAutomationManager()
 
-        chat_interface = ChatInterface(automation_manager)
-        chat_thread = threading.Thread(target=asyncio.run, args=(chat_interface.start_chat(),))
-        chat_thread.start()
+            chat_interface = ChatInterface(automation_manager)
+            chat_thread = threading.Thread(target=asyncio.run, args=(chat_interface.start_chat(),))
+            chat_thread.start()
 
-        automation_manager.ui.run()
-    except Exception as e:
-        logger.error(f"Fatal error in main: {e}")
-        solution = query_deepseek(f"Fatal error: {e}")
-        apply_solution(solution)
-        logger.info("Retry in 5 sec...")
-        time.sleep(5)
-        main()
+            automation_manager.ui.run()
+            break
+        except Exception as e:
+            logger.error(f"Fatal error in main: {e}")
+            solution = query_deepseek(f"Fatal error: {e}")
+            apply_solution(solution)
+            logger.info("Retry in 5 sec...")
+            time.sleep(5)
 
 if __name__ == "__main__":
     main()
