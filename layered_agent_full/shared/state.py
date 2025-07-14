@@ -18,6 +18,7 @@ class CommanderState:
         self.skills: Dict[str, Dict[str, Any]] = {}
         self.bearer_token: str = secrets.token_hex(16)
         self.function_schema: List[Dict[str, Any]] = []
+        self._memory_queue: Dict[str, List[Dict[str, Any]]] = {}
         self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         self._init_db()
 
@@ -88,27 +89,48 @@ class CommanderState:
             ),
         )
         self.conn.commit()
+        # also store in memory for quick retrieval
+        task_obj = {
+            "id": task_id,
+            "function": {
+                "name": getattr(func_call, "name", ""),
+                "arguments": getattr(func_call, "arguments", {})
+            }
+        }
+        self._memory_queue.setdefault(worker_id, []).append(task_obj)
         return task_id
 
     def fetch_tasks(self, worker_id: str) -> List[Dict[str, Any]]:
+        tasks = self._memory_queue.pop(worker_id, [])
+        mem_ids = [t["id"] for t in tasks]
+
+        if mem_ids:
+            placeholders = ",".join("?" for _ in mem_ids)
+            c = self.conn.cursor()
+            c.execute(
+                f"UPDATE queue SET status='sent' WHERE id IN ({placeholders})",
+                mem_ids,
+            )
+            self.conn.commit()
+
         c = self.conn.cursor()
         c.execute(
             "SELECT id, payload FROM queue WHERE worker_id=? AND status='pending'",
             (worker_id,),
         )
         rows = c.fetchall()
-        tasks = []
-        ids = []
+        db_ids = []
         for tid, payload in rows:
-            ids.append(tid)
+            db_ids.append(tid)
             tasks.append({"id": tid, "function": json.loads(payload)})
-        if ids:
-            placeholders = ",".join(["?"] * len(ids))
+        if db_ids:
+            placeholders = ",".join("?" for _ in db_ids)
             c.execute(
                 f"UPDATE queue SET status='sent' WHERE id IN ({placeholders})",
-                ids,
+                db_ids,
             )
             self.conn.commit()
+
         return tasks
 
     def complete(self, task_id: str, result: Any):
