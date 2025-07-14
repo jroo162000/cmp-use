@@ -11,6 +11,8 @@ from typing import Dict, Any
 import tkinter as tk
 from tkinter import ttk
 from pathlib import Path
+from memory_utils import ConversationMemory
+from voice_utils import speak, listen
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 import pandas as pd
@@ -42,6 +44,7 @@ THIS_FILE_PATH = Path(__file__).resolve()
 LOGS_DIR = THIS_FILE_PATH.parent / "logs"
 DATA_DIR = THIS_FILE_PATH.parent / "data"
 MODELS_DIR = THIS_FILE_PATH.parent / "models"
+HISTORY_FILE = LOGS_DIR / "chat_history.json"
 
 
 def ensure_directories_exist():
@@ -627,32 +630,51 @@ class ChatInterface:
     """
     A console-based interface supporting patch-based code changes.
     """
-    def __init__(self, agent):
+    def __init__(self, agent, voice: bool = False):
         self.agent = agent
+        self.voice = voice
         self.logger = logging.getLogger("chat_interface")
+        self.memory = ConversationMemory(HISTORY_FILE)
 
     async def start_chat(self):
         self.logger.info("Chat started. Type 'exit' to quit.")
-        print(
+        greeting = (
             "Hello! I'm your patch-based autonomous boot repair assistant. "
             "How can I help you today?"
         )
+        print(greeting)
+        if self.voice:
+            speak(greeting)
 
         while True:
-            user_input = input("You: ").strip()
+            if self.voice:
+                print("Listening...")
+                user_input = listen().strip()
+                if not user_input:
+                    continue
+                print(f"You: {user_input}")
+            else:
+                user_input = input("You: ").strip()
             if user_input.lower() == "exit":
                 print("Goodbye!")
+                if self.voice:
+                    speak("Goodbye")
                 break
 
             response = await self.process_input(user_input)
             print(f"Agent: {response}")
+            if self.voice:
+                speak(response)
 
     async def process_input(self, user_input: str) -> str:
+        self.memory.append("user", user_input)
         try:
-            return await self._route_command(user_input)
+            reply = await self._route_command(user_input)
         except Exception as e:
             self.logger.error(f"Error processing input: {e}")
-            return "An error occurred. I'll attempt to fix it."
+            reply = "An error occurred. I'll attempt to fix it."
+        self.memory.append("assistant", reply)
+        return reply
 
     async def _route_command(self, user_input: str) -> str:
         lower_input = user_input.lower()
@@ -714,7 +736,14 @@ class ChatInterface:
 
 
 def main():
-    if "--testmode" in sys.argv:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--testmode", action="store_true")
+    parser.add_argument("--voice", action="store_true", help="enable voice I/O")
+    args = parser.parse_args()
+
+    if args.testmode:
         logger.info("Running in testmode, exit 0.")
         sys.exit(0)
 
@@ -722,7 +751,7 @@ def main():
         try:
             automation_manager = EnhancedAutomationManager()
 
-            chat_interface = ChatInterface(automation_manager)
+            chat_interface = ChatInterface(automation_manager, voice=args.voice)
             chat_thread = threading.Thread(
                 target=asyncio.run, args=(chat_interface.start_chat(),))
             chat_thread.start()
