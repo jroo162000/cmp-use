@@ -38,7 +38,6 @@ This document describes the distinct “agents” (components/microservices) in 
 
 * **`bootstrap.py`**: Creates venv, installs deps, launches worker.
 * **`skills/`**: Python modules decorated with `@skill`—`core.py`, `network.py`, `sensor.py`, etc.
-* **`sandbox.py`**: (Optional) Plugin isolation and validation.
 
 ## 3. Planning Agent
 
@@ -85,18 +84,7 @@ This document describes the distinct “agents” (components/microservices) in 
 * **Microphone**: Records audio with `sounddevice` (`record_audio`).
 * Returns raw bytes or arrays for further processing by LLM or UI.
 
-## 7. Plugin Manager Agent
-
-**Role:** Dynamic plugin loading and version control.
-**Location:** _(not yet implemented)_
-
-### Responsibilities
-
-* Pulls new skill definitions from Git or URLs.
-* Validates and installs in isolated venv or container.
-* Updates skill registry in Worker Agent without full redeploy.
-
-## 8. Local Model Agent
+## 7. Local Model Agent
 
 **Role:** Provides fallback LLM inference.
 **Location:** `models/local_model.py`
@@ -107,7 +95,7 @@ This document describes the distinct “agents” (components/microservices) in 
 * Implements same `chat()` interface as OpenAI client.
 * Commander selects between local or API-based LLM at runtime.
 
-## 9. System-Health UI Agent
+## 8. System-Health UI Agent
 
 **Role:** Web dashboard for monitoring.
 **Location:** `commander/status_ui/` React app
