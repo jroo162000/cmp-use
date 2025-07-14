@@ -1,0 +1,10 @@
+flask
+psutil
+pandas
+scikit-learn
+joblib
+python-dotenv
+pyvirtualdisplay
+openai
+transformers
+vllm
