@@ -387,7 +387,18 @@ class BootRepairUI:
 
     def start_repair(self):
         self.status_label.config(text="Status: Running boot repair...")
-        asyncio.create_task(self._run_repair_async())
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            loop.create_task(self._run_repair_async())
+        else:
+            threading.Thread(
+                target=lambda: asyncio.run(self._run_repair_async()),
+                daemon=True,
+            ).start()
 
     async def _run_repair_async(self):
         success = await self.agent.run_boot_repair()
