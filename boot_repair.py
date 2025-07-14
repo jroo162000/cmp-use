@@ -4,26 +4,21 @@ from logging.handlers import TimedRotatingFileHandler
 import os
 import subprocess
 import asyncio
-import shutil
 import psutil
-import platform
 import threading
 import ast
-from typing import Dict, Any, List
-import difflib  # We'll use this for diff/patch
+from typing import Dict, Any
 import tkinter as tk
-from tkinter import scrolledtext, messagebox, ttk
+from tkinter import ttk
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
 import pandas as pd
-import joblib
 from dotenv import load_dotenv
 from pyvirtualdisplay import Display
 
 # If you want local LLM usage:
-from transformers import AutoTokenizer, pipeline
+from transformers import AutoTokenizer
 try:
     from vllm import LLM, SamplingParams
 except Exception:
@@ -32,7 +27,6 @@ except Exception:
 
 # 3rd-party LLM API (DeepSeek or OpenAI):
 from openai import OpenAI
-import json
 import time
 
 # -------------------------------------------------------------------
@@ -47,6 +41,7 @@ LOGS_DIR = THIS_FILE_PATH.parent / "logs"
 DATA_DIR = THIS_FILE_PATH.parent / "data"
 MODELS_DIR = THIS_FILE_PATH.parent / "models"
 
+
 def ensure_directories_exist():
     try:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -54,6 +49,7 @@ def ensure_directories_exist():
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         print(f"Failed to create directories: {e}", file=sys.stderr)
+
 
 ensure_directories_exist()
 
@@ -96,10 +92,13 @@ try:
             max_model_len=8192,
             trust_remote_code=True,
             enforce_eager=True,
-            device="cpu"  
+            device="cpu"
         )
-        sampling_params = SamplingParams(temperature=0.3, max_tokens=256,
-                                         stop_token_ids=[tokenizer.eos_token_id])
+        sampling_params = SamplingParams(
+            temperature=0.3,
+            max_tokens=256,
+            stop_token_ids=[tokenizer.eos_token_id],
+        )
     else:
         raise RuntimeError("vLLM not available")
 except Exception as e:
@@ -113,6 +112,7 @@ except Exception as e:
     logger.warning(f"Failed to initialize DeepSeek client: {e}")
     ds_client = None
 
+
 def query_deepseek(prompt: str) -> str:
     """
     Ask the LLM (DeepSeek or fallback) for a response.
@@ -122,7 +122,13 @@ def query_deepseek(prompt: str) -> str:
             response = ds_client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[
-                    {"role": "system", "content": "You are an autonomous repair assistant that returns patches (diff)."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an autonomous repair assistant "
+                            "that returns patches (diff)."
+                        ),
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 stream=False
@@ -143,6 +149,7 @@ def query_deepseek(prompt: str) -> str:
 #    PATCH-BASED SELF-MODIFICATION LOGIC
 # --------------------------------------------------------------------------
 
+
 def propose_patch_changes(user_instructions: str, error_info: str = "") -> str:
     """
     Get a *diff/patch* (not entire code) from the LLM, describing what lines
@@ -156,8 +163,10 @@ def propose_patch_changes(user_instructions: str, error_info: str = "") -> str:
         return ""
 
     prompt = (
-        "You are the code for this entire file. The user wants incremental changes.\n"
-        "Provide a unified diff patch (like what 'diff -u' produces) that modifies only the relevant lines.\n"
+        "You are the code for this entire file. "
+        "The user wants incremental changes.\n"
+        "Provide a unified diff patch (like what 'diff -u' produces) that "
+        "modifies only the relevant lines.\n"
         "If no changes are needed, return an empty diff.\n\n"
         f"User instructions:\n{user_instructions}\n\n"
         f"Error info:\n{error_info}\n\n"
@@ -167,6 +176,7 @@ def propose_patch_changes(user_instructions: str, error_info: str = "") -> str:
 
     diff_text = query_deepseek(prompt)
     return diff_text
+
 
 def apply_patch_changes(diff_text: str) -> str:
     """
@@ -189,7 +199,7 @@ def apply_patch_changes(diff_text: str) -> str:
     # Parse the diff
     patched_lines = []
     try:
-        
+
         patch_path = THIS_FILE_PATH.parent / "temp.patch"
         with open(patch_path, "w", encoding="utf-8") as pf:
             pf.write(diff_text)
@@ -199,7 +209,8 @@ def apply_patch_changes(diff_text: str) -> str:
             of.writelines(original_lines)
 
         patched_temp = THIS_FILE_PATH.parent / "patched_temp.py"
-        patch_cmd = ["patch", str(original_temp), str(patch_path), "-o", str(patched_temp)]
+        patch_cmd = ["patch", str(original_temp), str(
+            patch_path), "-o", str(patched_temp)]
         proc = subprocess.run(patch_cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             msg = f"Patch command failed: {proc.stderr}"
@@ -253,9 +264,10 @@ def apply_patch_changes(diff_text: str) -> str:
         logger.error(msg)
         return msg
 
+
 def run_local_test_suite_with_code(new_code: str) -> Dict[str, Any]:
     """
-    Minimal approach: write the code to a temp file with `--testmode` 
+    Minimal approach: write the code to a temp file with `--testmode`
     to see if it starts up.
     """
     temp_path = THIS_FILE_PATH.parent / "temp_patch_test.py"
@@ -275,13 +287,16 @@ def run_local_test_suite_with_code(new_code: str) -> Dict[str, Any]:
         temp_path.unlink(missing_ok=True)
         if result.returncode != 0:
             reason = (
-                f"Exit code {result.returncode}\nStdout:\n{result.stdout}\nStderr:\n{result.stderr}"
+                f"Exit code {result.returncode}\n"
+                f"Stdout:\n{result.stdout}\n"
+                f"Stderr:\n{result.stderr}"
             )
             return {"passed": False, "reason": reason}
         return {"passed": True, "reason": "All good."}
     except Exception as e:
         temp_path.unlink(missing_ok=True)
         return {"passed": False, "reason": f"Test run exception: {e}"}
+
 
 def attempt_git_commit(commit_msg: str):
     logger.info("Attempting Git commit for patch changes...")
@@ -291,6 +306,7 @@ def attempt_git_commit(commit_msg: str):
         logger.info("Git commit successful.")
     except Exception as e:
         logger.warning(f"Git commit failed or git not installed: {e}")
+
 
 def patch_self_modify(user_instructions: str, error_info: str = "") -> str:
     """
@@ -303,18 +319,20 @@ def patch_self_modify(user_instructions: str, error_info: str = "") -> str:
 
 # A simpler "apply_solution" that uses patches
 
+
 def apply_solution(solution: str) -> bool:
     """
-    If the 'solution' is a diff, we apply it. If it's not, we treat it as instructions
-    to produce a diff. 
+    If the 'solution' is a diff, we apply it. If it's not, we treat it as
+    instructions to produce a diff.
     """
     logger.info("Applying solution in a patch-based manner.")
-    if solution.startswith("--- "):  
+    if solution.startswith("--- "):
         result = apply_patch_changes(solution)
         return "Code updated successfully" in result
     else:
         result = patch_self_modify(solution)
         return "Code updated successfully" in result
+
 
 class BootRepairUI:
     def __init__(self, agent):
@@ -323,10 +341,12 @@ class BootRepairUI:
         self.root.title("Patch-based Boot Repair UI")
         self.root.geometry("400x200")
 
-        self.status_label = tk.Label(self.root, text="Status: Idle", font=("Arial", 12))
+        self.status_label = tk.Label(
+            self.root, text="Status: Idle", font=("Arial", 12))
         self.status_label.pack(pady=10)
 
-        self.repair_button = ttk.Button(self.root, text="Start Boot Repair", command=self.start_repair)
+        self.repair_button = ttk.Button(
+            self.root, text="Start Boot Repair", command=self.start_repair)
         self.repair_button.pack(pady=10)
 
     def run(self):
@@ -341,7 +361,9 @@ class BootRepairUI:
         if success:
             self.status_label.config(text="Status: Repair completed.")
         else:
-            self.status_label.config(text="Status: Repair failed or incomplete.")
+            self.status_label.config(
+                text="Status: Repair failed or incomplete.")
+
 
 class BootIssuePredictor:
     def __init__(self):
@@ -369,7 +391,8 @@ class BootIssuePredictor:
             return pd.DataFrame()
         try:
             data = pd.read_csv(csv_path)
-            data['issue'] = data['issue'].map(self.issue_mapping).fillna("unknown")
+            data['issue'] = data['issue'].map(
+                self.issue_mapping).fillna("unknown")
             data['efi_mounted'] = data['efi_mounted'].astype(int)
             return data
         except Exception as e:
@@ -383,7 +406,8 @@ class BootIssuePredictor:
                 return
             X = data.drop(columns=['issue'])
             y = data['issue']
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.2, random_state=42)
             self.model.fit(X_train, y_train)
             accuracy = self.model.score(X_test, y_test)
             self.logger.info(f"Model trained with accuracy: {accuracy:.2f}")
@@ -403,6 +427,7 @@ class BootIssuePredictor:
         except Exception as e:
             self.logger.error(f"Failed to predict issue: {e}")
             return "unknown"
+
 
 class BootRepairLogic:
     def __init__(self):
@@ -434,21 +459,33 @@ class BootRepairLogic:
     async def _repair_kernel_panic_rootfs(self) -> bool:
         try:
             self.logger.info("Repairing kernel panic rootfs...")
-            self.current_process = subprocess.Popen(["mkinitcpio", "-P"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.current_process = subprocess.Popen(
+                ["mkinitcpio", "-P"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
             self.current_process.wait()
             if self.current_process.returncode != 0:
-                raise subprocess.CalledProcessError(self.current_process.returncode, self.current_process.args)
+                raise subprocess.CalledProcessError(
+                    self.current_process.returncode, self.current_process.args)
 
-            self.current_process = subprocess.Popen(["grub-mkconfig", "-o", "/boot/grub/grub.cfg"],
-                                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.current_process = subprocess.Popen(
+                ["grub-mkconfig", "-o", "/boot/grub/grub.cfg"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
             self.current_process.wait()
             if self.current_process.returncode != 0:
-                raise subprocess.CalledProcessError(self.current_process.returncode, self.current_process.args)
+                raise subprocess.CalledProcessError(
+                    self.current_process.returncode, self.current_process.args)
 
             self.process_status = "completed"
             return True
         except subprocess.CalledProcessError as e:
-            err_msg = f"Command failed: {e.cmd}, Output: {e.output}, Error: {e.stderr}"
+            err_msg = (
+                f"Command failed: {e.cmd}, "
+                f"Output: {e.output}, Error: {e.stderr}"
+            )
             self.logger.error(err_msg)
             self.process_status = "failed"
             solution = query_deepseek(err_msg)
@@ -469,9 +506,11 @@ class BootRepairLogic:
         self.process_status = "completed"
         return True
 
+
 class DefaultProcessManager:
     def terminate_all(self):
         logger.info("Terminating all processes... (Placeholder)")
+
 
 class EnhancedAutomationManager:
     def __init__(self):
@@ -498,15 +537,19 @@ class EnhancedAutomationManager:
         try:
             self.logger.info("Running boot repair...")
             system_state = self._get_system_state()
-            predicted_issue = self.boot_issue_predictor.predict_issue(system_state)
+            predicted_issue = self.boot_issue_predictor.predict_issue(
+                system_state)
             self.logger.info(f"Predicted issue: {predicted_issue}")
             await self.log_system_state(predicted_issue)
 
-            success = await self.boot_repair_logic.repair_issue(predicted_issue)
+            success = await self.boot_repair_logic.repair_issue(
+                predicted_issue
+            )
             if success:
                 self.logger.info(f"Issue {predicted_issue} repaired!")
             else:
-                self.logger.warning(f"Could not repair issue: {predicted_issue}")
+                self.logger.warning(
+                    f"Could not repair issue: {predicted_issue}")
             return success
         except Exception as e:
             err_msg = f"run_boot_repair failed: {e}"
@@ -535,6 +578,7 @@ class EnhancedAutomationManager:
     async def log_system_state(self, issue: str):
         self.logger.info(f"System state logged for {issue}")
 
+
 class ChatInterface:
     """
     A console-based interface supporting patch-based code changes.
@@ -545,7 +589,10 @@ class ChatInterface:
 
     async def start_chat(self):
         self.logger.info("Chat started. Type 'exit' to quit.")
-        print("Hello! I'm your patch-based autonomous boot repair assistant. How can I help you today?")
+        print(
+            "Hello! I'm your patch-based autonomous boot repair assistant. "
+            "How can I help you today?"
+        )
 
         while True:
             user_input = input("You: ").strip()
@@ -580,7 +627,11 @@ class ChatInterface:
         elif "terminate" in lower_input or "stop" in lower_input:
             self.agent.process_manager.terminate_all()
             return "Terminated all running processes."
-        elif "self modify" in lower_input or "update code" in lower_input or "patch code" in lower_input:
+        elif (
+            "self modify" in lower_input
+            or "update code" in lower_input
+            or "patch code" in lower_input
+        ):
             print("Enter instructions for patch-based code modification:")
             instructions = input("Instructions: ")
             return patch_self_modify(instructions)
@@ -590,7 +641,8 @@ class ChatInterface:
             return self.list_functions()
         else:
             prompt = (
-                f"User said: '{user_input}'. Provide a patch or instructions for patch-based updates if relevant."
+                f"User said: '{user_input}'. Provide a patch or instructions "
+                f"for patch-based updates if relevant."
             )
             solution = query_deepseek(prompt)
             if solution.startswith("--- "):
@@ -616,6 +668,7 @@ class ChatInterface:
         solution = query_deepseek(error_str)
         return patch_self_modify(solution, error_str)
 
+
 def main():
     if "--testmode" in sys.argv:
         logger.info("Running in testmode, exit 0.")
@@ -626,7 +679,8 @@ def main():
             automation_manager = EnhancedAutomationManager()
 
             chat_interface = ChatInterface(automation_manager)
-            chat_thread = threading.Thread(target=asyncio.run, args=(chat_interface.start_chat(),))
+            chat_thread = threading.Thread(
+                target=asyncio.run, args=(chat_interface.start_chat(),))
             chat_thread.start()
 
             automation_manager.ui.run()
@@ -637,6 +691,7 @@ def main():
             apply_solution(solution)
             logger.info("Retry in 5 sec...")
             time.sleep(5)
+
 
 if __name__ == "__main__":
     main()
