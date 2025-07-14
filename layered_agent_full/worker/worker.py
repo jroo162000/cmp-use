@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse,importlib.util,inspect,sys,platform,time,traceback,base64,hashlib,json,requests,os,logging
 from pathlib import Path
+from layered_agent_full.plugin_manager import PluginManager
 # logging
 L=Path.home()/".agent"/"logs";L.mkdir(parents=True,exist_ok=True)
 logging.basicConfig(filename=L/"worker.log",level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s")
@@ -8,8 +9,19 @@ logging.basicConfig(filename=L/"worker.log",level=logging.INFO,format="%(asctime
 def discover():
     sk={}
     for f in (Path(__file__).parent/"skills").glob("*.py"):
+w55z61-codex/run-all-code-from-the-repo
         if f.stem=="__init__":continue
         spec=importlib.util.spec_from_file_location(f.stem,f);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+=======
+        if f.stem=="__init__":
+            continue
+        spec=importlib.util.spec_from_file_location(
+            "layered_agent_full.worker.skills." + f.stem,
+            f,
+        )
+        m=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+main
         for n,fn in inspect.getmembers(m,inspect.isfunction):
             if getattr(fn,"_is_skill",False): sk[n]=fn
     return sk
@@ -23,9 +35,21 @@ def encrypt(o,p):
     from cryptography.fernet import Fernet
     return Fernet(base64.urlsafe_b64encode(key)).encrypt(r).decode()
 
+# plugin support
+PM=PluginManager()
+skills={}
+
+def refresh_skills(pm:PluginManager=PM):
+    """Reload built-in and plugin skills."""
+    global skills
+    base=discover()
+    base.update(pm.discover_plugins())
+    skills=base
+    return skills
+
 # main
 parser=argparse.ArgumentParser();parser.add_argument("--server",required=True);parser.add_argument("--layer",required=True,choices=["L-2","L-3"]);parser.add_argument("--token",required=True);args=parser.parse_args()
-skills=discover();man=manifest(skills)
+skills=refresh_skills();man=manifest(skills)
 # register
 try:
     r=requests.post(f"{args.server}/register",json={"token":args.token,"os":platform.system().lower(),"layer":args.layer,"skills":man},timeout=15)
