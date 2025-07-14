@@ -106,9 +106,22 @@ Before a patch suggested by the language model is applied, the script shows the 
 
 ## Layered Agent demo
 
+
 The `layered_agent_full` folder contains a proof-of-concept Commander/Worker architecture. It can be run independently from the boot-repair scripts.
 
 The individual components of this demo (Commander, Worker, Memory agent, etc.) are summarized in [AGENTS.md](AGENTS.md). Refer to that document if you need a description of the responsibilities and interfaces of each part of the system.
+
+### Architecture summary
+
+At a high level the layered agent is composed of several micro-services:
+
+* **Commander** – central FastAPI service that coordinates tasks and invokes the language model.
+* **Worker** – executes skills on behalf of the commander. Multiple workers can run on different machines.
+* **Planning Agent** – breaks high-level goals into schedulable subtasks.
+* **Memory Agent** – persists chat history so the LLM can maintain context.
+* **Voice I/O Agent** – optional speech recognition and synthesis functions.
+
+See [AGENTS.md](AGENTS.md) for the full breakdown of roles and additional agents.
 
 ### Installing requirements
 
