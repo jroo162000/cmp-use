@@ -108,6 +108,8 @@ Before a patch suggested by the language model is applied, the script shows the 
 
 The `layered_agent_full` folder contains a proof-of-concept Commander/Worker architecture. It can be run independently from the boot-repair scripts.
 
+The individual components of this demo (Commander, Worker, Memory agent, etc.) are summarized in [AGENTS.md](AGENTS.md). Refer to that document if you need a description of the responsibilities and interfaces of each part of the system.
+
 ### Installing requirements
 
 Create or activate a virtual environment and install the dependencies. The full set of packages is in `layered_agent_full/requirements.txt`. A smaller set is available in `layered_agent_full/requirements-minimal.txt`.
@@ -130,18 +132,22 @@ The server prints the registration token required by workers.
 
 ### Launching a Worker
 
-Start a worker and point it at the commander:
-
-```bash
-python -m layered_agent_full.worker.worker --server http://localhost:8000 --layer L-2 --token <token>
-```
-
-`bootstrap.py` can also be used to create a dedicated virtual environment before launching:
+The easiest way to start a worker is via the `bootstrap.py` helper. It creates a
+virtual environment, installs the worker requirements and then launches the
+process:
 
 ```bash
 python -m layered_agent_full.worker.bootstrap --server http://localhost:8000 --token <token>
 # add `-v` to show pip logs during installation
 ```
+
+You can also run the worker module directly if the dependencies are already
+installed:
+
+```bash
+python -m layered_agent_full.worker.worker --server http://localhost:8000 --layer L-2 --token <token>
+```
+
 The bootstrap script prints whether the full or minimal requirements were installed.
 
 ### Environment variables
