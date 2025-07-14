@@ -12,7 +12,6 @@ def open_browser():
     return jsonify({'status': 'Browser opened'})
 
 
-
 # Disabled remote code execution endpoint for security.
 @app.route('/run_code', methods=['POST'])
 def run_code():
