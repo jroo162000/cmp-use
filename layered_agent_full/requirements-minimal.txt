@@ -1,2 +1,4 @@
 openai>=1.14.3
 requests>=2.31.0
+toml>=0.10
+python-multipart>=0.0.6
