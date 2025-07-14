@@ -4,8 +4,11 @@ Breaks high-level goals into scheduled tasks stored in a SQLite DB."""
 import sqlite3
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 
-DB_PATH = "./commander/tasks.db"
+# Store tasks database in the same directory as this module
+DB_PATH = Path(__file__).resolve().parent / "tasks.db"
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 class Planner:
