@@ -2,9 +2,9 @@ import os, toml, pathlib, uuid, json
 from fastapi import FastAPI, Body, HTTPException, UploadFile, File, Header, Response
 from pydantic import BaseModel
 import openai
-from shared.state import CommanderState
-from shared.protocol import ChatMessage, FunctionCall
-from shared.utils import aes_decrypt
+from layered_agent_full.shared.state import CommanderState
+from layered_agent_full.shared.protocol import ChatMessage, FunctionCall
+from layered_agent_full.shared.utils import aes_decrypt
 
 app = FastAPI()
 state = CommanderState()

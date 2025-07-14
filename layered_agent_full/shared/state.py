@@ -3,9 +3,12 @@ import json
 import secrets
 from datetime import datetime
 from typing import Dict, List, Any
-from shared.protocol import make_skill_schema, ChatMessage
+from pathlib import Path
+from layered_agent_full.shared.protocol import make_skill_schema, ChatMessage
 
-DB_PATH = './commander/tasks.db'
+# Use a path relative to this file so the DB is found regardless of CWD
+DB_PATH = Path(__file__).resolve().parent.parent / "commander" / "tasks.db"
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 class CommanderState:
@@ -86,7 +89,7 @@ class CommanderState:
 # Test cases for planning and shared modules
 if __name__ == '__main__':
     print('Testing shared.protocol.make_skill_schema...')
-    from shared.protocol import make_skill_schema, ChatMessage
+    from layered_agent_full.shared.protocol import make_skill_schema, ChatMessage
 
     schema = make_skill_schema([{'name': 'foo', 'description': 'desc', 'parameters': {}}])
     print('Schema:', schema)
@@ -94,7 +97,7 @@ if __name__ == '__main__':
     print('ChatMessage:', msg)
 
     print('\nTesting Planner...')
-    from commander.planning import Planner
+    from layered_agent_full.commander.planning import Planner
 
     planner = Planner()
     tid = planner.plan('Step one. Step two.')
