@@ -72,3 +72,4 @@ python boot_repair.py --testmode
 `boot_repair.py` performs patch-based self modification. Unintended behavior can
 occur if a generated patch is faulty. Review the code and run it only on systems
 where potential changes and restarts are acceptable.
+Before a patch suggested by the language model is applied, the script shows the diff and asks for confirmation (`y`/`n`).
