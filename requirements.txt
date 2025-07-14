@@ -7,4 +7,3 @@ python-dotenv
 pyvirtualdisplay
 openai
 transformers
-vllm

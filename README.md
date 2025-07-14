@@ -23,6 +23,14 @@ source .venv/bin/activate  # On Windows use .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+Only the core dependencies are installed this way. Optional GPU-intensive
+packages (such as `vllm`) are listed in `requirements-gpu.txt` and can be
+installed separately if needed:
+
+```bash
+pip install -r requirements-gpu.txt  # optional
+```
+
 The packages include `scikit-learn`, `transformers` and other heavy
 dependencies, so installation may take some time.
 

@@ -1,0 +1,3 @@
+# Optional GPU-related packages
+vllm
+
