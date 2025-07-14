@@ -55,12 +55,16 @@ On other distributions use the appropriate package manager such as `dnf` or `pac
 
 ## Running the scripts
 
+Run each entry point using ``python -m`` so that the project root
+is placed on ``PYTHONPATH`` automatically. This avoids modifying
+``sys.path`` in code.
+
 ### `app.py`
 
 Start the Flask server:
 
 ```bash
-python app.py
+python -m app
 ```
 
 The server listens on port 5000. Available endpoints:
@@ -76,21 +80,21 @@ issues. It also contains logic to modify and patch its own code. For safety run
 it inside a VM or other sandbox.
 
 ```bash
-python boot_repair.py
+python -m boot_repair
 ```
 
 You can pass `--testmode` to perform a quick start-up test without entering the
 full repair loop:
 
 ```bash
-python boot_repair.py --testmode
+python -m boot_repair --testmode
 ```
 
 To enable experimental voice interaction, run with `--voice` (requires
 `SpeechRecognition` and `pyttsx3`):
 
 ```bash
-python boot_repair.py --voice
+python -m boot_repair --voice
 ```
 
 ## Safety notice
