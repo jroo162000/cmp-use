@@ -5,7 +5,13 @@ scikit-learn
 joblib
 python-dotenv
 pyvirtualdisplay
-openai
+openai>=1.14.3
 transformers
 pyttsx3
 SpeechRecognition
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+requests>=2.31.0
+toml>=0.10
+cryptography>=42.0.5
+python-multipart>=0.0.6
