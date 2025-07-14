@@ -119,6 +119,12 @@ pip install -r layered_agent_full/requirements.txt
 # or
 pip install -r layered_agent_full/requirements-minimal.txt
 ```
+Optional sensor features require extra packages that are not installed
+by default. Install them manually if needed:
+
+```bash
+pip install opencv-python sounddevice numpy
+```
 
 ### Starting the Commander
 
