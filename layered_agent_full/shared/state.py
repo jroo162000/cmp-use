@@ -31,6 +31,15 @@ class CommanderState:
             details TEXT
         )"""
         )
+        c.execute(
+            """
+        CREATE TABLE IF NOT EXISTS queue (
+            id TEXT PRIMARY KEY,
+            worker_id TEXT,
+            status TEXT,
+            payload TEXT
+        )"""
+        )
         self.conn.commit()
 
     def audit(self, action: str, details: Dict[str, Any]):
@@ -65,10 +74,42 @@ class CommanderState:
                 'arguments': getattr(func_call, 'arguments', {}),
             },
         )
+        c = self.conn.cursor()
+        c.execute(
+            "INSERT INTO queue (id, worker_id, status, payload) VALUES (?,?,?,?)",
+            (
+                task_id,
+                worker_id,
+                "pending",
+                json.dumps({
+                    "name": getattr(func_call, "name", ""),
+                    "arguments": getattr(func_call, "arguments", {})
+                }),
+            ),
+        )
+        self.conn.commit()
         return task_id
 
     def fetch_tasks(self, worker_id: str) -> List[Dict[str, Any]]:
-        return []
+        c = self.conn.cursor()
+        c.execute(
+            "SELECT id, payload FROM queue WHERE worker_id=? AND status='pending'",
+            (worker_id,),
+        )
+        rows = c.fetchall()
+        tasks = []
+        ids = []
+        for tid, payload in rows:
+            ids.append(tid)
+            tasks.append({"id": tid, "function": json.loads(payload)})
+        if ids:
+            placeholders = ",".join(["?"] * len(ids))
+            c.execute(
+                f"UPDATE queue SET status='sent' WHERE id IN ({placeholders})",
+                ids,
+            )
+            self.conn.commit()
+        return tasks
 
     def complete(self, task_id: str, result: Any):
         self.audit('complete', {'task_id': task_id, 'result': result})
