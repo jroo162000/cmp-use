@@ -6,7 +6,6 @@ import subprocess
 import shutil
 import asyncio
 import psutil
-import threading
 import ast
 from typing import Dict, Any
 import tkinter as tk
@@ -189,6 +188,12 @@ def propose_patch_changes(user_instructions: str, error_info: str = "") -> str:
     diff_text = query_deepseek(prompt)
     return diff_text
 
+def confirm_patch_application(diff_text: str) -> bool:
+    """Display the diff and ask the user to confirm applying it."""
+    print("Proposed patch:\n")
+    print(diff_text)
+    choice = input("Apply this patch? [y/N]: ").strip().lower()
+    return choice in ("y", "yes")
 
 def apply_patch_changes(diff_text: str) -> str:
     """
@@ -203,6 +208,10 @@ def apply_patch_changes(diff_text: str) -> str:
         msg = "The 'patch' command is required but not found. Please install it."
         logger.error(msg)
         return msg
+
+    if not confirm_patch_application(diff_text):
+        logger.info("Patch application cancelled by user.")
+        return "Patch application cancelled."
 
     # Read the current code lines
     try:
