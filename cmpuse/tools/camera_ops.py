@@ -118,8 +118,14 @@ class VisionMonitor:
 
         # For local detection (fast, no API calls)
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        self.mp_face_detection = mp.solutions.face_detection
-        self.mp_pose = mp.solutions.pose
+        # mediapipe is heavy + optional; guard so capture/see/monitoring work with cv2
+        # alone. Pose/face-mesh detection lazily needs mediapipe only when actually used.
+        try:
+            self.mp_face_detection = mp.solutions.face_detection
+            self.mp_pose = mp.solutions.pose
+        except Exception:
+            self.mp_face_detection = None
+            self.mp_pose = None
 
         # Track what we've seen
         self.faces_detected = 0
@@ -310,9 +316,16 @@ class CameraManager:
     def __init__(self):
         self.camera = None
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        self.mp_hands = mp.solutions.hands
-        self.mp_face_detection = mp.solutions.face_detection
-        self.mp_pose = mp.solutions.pose
+        # mediapipe is heavy + optional; guard so capture/see work with cv2 alone.
+        # detect_hands/pose/face-mesh lazily require mediapipe only when actually used.
+        try:
+            self.mp_hands = mp.solutions.hands
+            self.mp_face_detection = mp.solutions.face_detection
+            self.mp_pose = mp.solutions.pose
+        except Exception:
+            self.mp_hands = None
+            self.mp_face_detection = None
+            self.mp_pose = None
         self.recording = False
 
     def open_camera(self, camera_index=0):

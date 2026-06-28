@@ -94,6 +94,17 @@ def _plan(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"preview": f"Learning action: {action}", "args": args}
 
 def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
+    def _strip_highlight_markup(value):
+        if isinstance(value, str):
+            return value.replace("⟦HL⟧", "").replace("⟦/HL⟧", "")
+        if isinstance(value, dict):
+            return {k: _strip_highlight_markup(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_strip_highlight_markup(v) for v in value]
+        return value
+
+    args = _strip_highlight_markup(args)
+
     if dry_run:
         return {"status": "dry-run", "message": "Would perform learning operation", "plan": _plan(args)}
 
@@ -102,6 +113,7 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
 
     try:
         conn = sqlite3.connect(DB_PATH)
+        conn.text_factory = lambda b: _strip_highlight_markup(b.decode())
         cursor = conn.cursor()
         now = datetime.now().isoformat()
 

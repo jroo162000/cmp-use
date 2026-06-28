@@ -3,13 +3,16 @@ Enhanced Voice - ElevenLabs TTS, custom voice models, voice cloning
 """
 
 import os
-from elevenlabs import VoiceSettings
+from elevenlabs import VoiceSettings, Voice
 from elevenlabs.client import ElevenLabs
 from typing import Any, Dict
 from ..tool_registry import Tool, register
 
 # ElevenLabs configuration
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY', '')
+# Default voice for TTS. Configurable via env so it isn't hardwired; falls back to
+# ElevenLabs "Rachel" if unset. Set ELEVENLABS_VOICE_ID to e.g. Vella's cloned voice.
+DEFAULT_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')
 
 class VoiceManager:
     def __init__(self):
@@ -40,21 +43,28 @@ class VoiceManager:
                 {"name": "Sam", "voice_id": "yoZ06aMxZJJ28mfd3POQ", "category": "premade"}
             ]
 
+        # Use the raw REST endpoint instead of client.voices.get_all(): the v1 SDK's
+        # pydantic model fails to parse the current /voices response (fine_tuning.message),
+        # which previously made this return None and crash on len(). REST + manual parse
+        # is robust and returns the real account voices (incl. the Vella clone).
         try:
-            response = client.voices.get_all()
-            voices = []
-            for voice in response.voices:
-                voices.append({
-                    "name": voice.name,
-                    "voice_id": voice.voice_id,
-                    "category": voice.category if hasattr(voice, 'category') else 'unknown'
-                })
-            return voices
-        except Exception as e:
-            # Return default voices if API call fails
-            return self.list_voices.__defaults__
+            import requests
+            r = requests.get("https://api.elevenlabs.io/v1/voices",
+                             headers={"xi-api-key": ELEVENLABS_API_KEY}, timeout=20)
+            data = r.json()
+            voices = [{"name": v.get("name"), "voice_id": v.get("voice_id"),
+                       "category": v.get("category", "unknown")} for v in data.get("voices", [])]
+            if voices:
+                return voices
+            raise ValueError("empty voice list")
+        except Exception:
+            # Safe fallback (a valid list, never None) so callers never crash.
+            return [
+                {"name": "Rachel", "voice_id": "21m00Tcm4TlvDq8ikWAM", "category": "premade"},
+                {"name": "Vella", "voice_id": DEFAULT_VOICE_ID, "category": "cloned"},
+            ]
 
-    def speak(self, text, voice_id="21m00Tcm4TlvDq8ikWAM", output_path=None, stability=0.5, similarity_boost=0.75):
+    def speak(self, text, voice_id=DEFAULT_VOICE_ID, output_path=None, stability=0.5, similarity_boost=0.75):
         """Generate speech using ElevenLabs"""
         client = self.get_client()
 
@@ -62,13 +72,18 @@ class VoiceManager:
             raise Exception("ElevenLabs not configured. Set ELEVENLABS_API_KEY environment variable.")
 
         try:
-            # Generate audio
+            # Generate audio. Pass a Voice object (voice_id directly) so the SDK does
+            # NOT call voices.get_all() to resolve a name — that endpoint has a schema
+            # parse bug in elevenlabs 1.0.0 and would make ElevenLabs error out and
+            # silently fall back to local SAPI. This keeps the Vella voice_id working.
             audio = client.generate(
                 text=text,
-                voice=voice_id,
-                voice_settings=VoiceSettings(
-                    stability=stability,
-                    similarity_boost=similarity_boost
+                voice=Voice(
+                    voice_id=voice_id,
+                    settings=VoiceSettings(
+                        stability=stability,
+                        similarity_boost=similarity_boost
+                    )
                 ),
                 model="eleven_monolingual_v1"
             )
@@ -111,7 +126,7 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     try:
         if action == "speak":
             text = args.get("text")
-            voice_id = args.get("voice_id", "21m00Tcm4TlvDq8ikWAM")  # Rachel by default
+            voice_id = args.get("voice_id", DEFAULT_VOICE_ID)  # default via ELEVENLABS_VOICE_ID (Vella)
             output_path = args.get("output_path")
             stability = args.get("stability", 0.5)
             similarity_boost = args.get("similarity_boost", 0.75)
@@ -223,7 +238,7 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
                 return {"status": "error", "message": f"Delete error: {str(delete_error)}"}
 
         elif action == "get_voice_settings":
-            voice_id = args.get("voice_id", "21m00Tcm4TlvDq8ikWAM")
+            voice_id = args.get("voice_id", DEFAULT_VOICE_ID)
 
             # Return recommended voice settings
             settings = {

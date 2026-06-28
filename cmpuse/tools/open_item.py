@@ -26,29 +26,108 @@ APP_ALIASES = {
 }
 
 
+_BROWSER_WORDS = {"browser", "web browser", "default browser", "default web browser", "regular browser", "normal browser", "real browser",
+                  "internet", "chrome", "google chrome", "edge", "microsoft edge", "firefox",
+                  "mozilla firefox"}
+
+
+def _looks_like_browser(s: str) -> bool:
+    s = (s or "").strip().lower()
+    s2 = s[:-len(" browser")].strip() if s.endswith(" browser") else s
+    return (s in _BROWSER_WORDS) or (s2 in _BROWSER_WORDS) or \
+        s2 in {"chrome", "google chrome", "edge", "microsoft edge", "firefox",
+               "regular", "normal", "real", "web", "internet"}
+
+
+def _resolve_browser_exe(name: str):
+    """Find the user's REAL browser exe (so they can sign in — the Selenium automation
+    browser is detected/blocked by Google). Defaults to Chrome, then Edge."""
+    name = (name or "").lower()
+    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+    pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    lad = os.environ.get("LOCALAPPDATA", "")
+    edge = [os.path.join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
+            os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe")]
+    chrome = [os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+              os.path.join(pf86, "Google", "Chrome", "Application", "chrome.exe"),
+              os.path.join(lad, "Google", "Chrome", "Application", "chrome.exe")]
+    firefox = [os.path.join(pf, "Mozilla Firefox", "firefox.exe"),
+               os.path.join(pf86, "Mozilla Firefox", "firefox.exe")]
+    if "edge" in name:
+        cands = edge + chrome
+    elif "firefox" in name or "mozilla" in name:
+        cands = firefox + chrome + edge
+    else:
+        cands = chrome + edge  # generic "browser"/"chrome" -> Chrome, fall back to Edge
+    for c in cands:
+        if c and os.path.isfile(c):
+            return c
+    # Not at standard paths — check the Windows App Paths registry, then PATH.
+    try:
+        import winreg
+        exe = "msedge.exe" if "edge" in name else ("firefox.exe" if ("firefox" in name or "mozilla" in name) else "chrome.exe")
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(hive, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\\" + exe) as k:
+                    p, _ = winreg.QueryValueEx(k, "")
+                    if p and os.path.isfile(p):
+                        return p
+            except OSError:
+                pass
+    except Exception:
+        pass
+    import shutil as _sh
+    for cand in ("chrome", "msedge", "firefox"):
+        w = _sh.which(cand)
+        if w:
+            return w
+    for e in edge:  # Edge ships with Windows — safe final fallback
+        if os.path.isfile(e):
+            return e
+    return None
+
+
 def _file_has_handler(path: str) -> bool:
-    """True if the file's extension has a real associated app on this machine.
-    Used to give an honest 'no app installed' answer instead of popping the
-    Windows 'How do you want to open this?' chooser."""
-    ext = os.path.splitext(path)[1]
+    """True if the file's extension has a real associated app on this machine,
+    INCLUDING modern UWP/Store apps (e.g. Movies & TV for .mp4, Photos for .jpg).
+    The old ASSOCSTR_EXECUTABLE check false-negatived on Store apps (they have no
+    classic .exe), which made AVA wrongly say 'no app installed' for media files.
+    We check the registry associations instead (UserChoice / OpenWithProgids / ProgID)."""
+    ext = os.path.splitext(path)[1].lower()
     if not ext:
         return True
     try:
-        import ctypes
-        ASSOCF_NONE = 0
-        ASSOCSTR_EXECUTABLE = 2
-        buf = ctypes.create_unicode_buffer(2048)
-        size = ctypes.c_ulong(2048)
-        hr = ctypes.windll.shlwapi.AssocQueryStringW(
-            ASSOCF_NONE, ASSOCSTR_EXECUTABLE, ext, None, buf, ctypes.byref(size))
-        if hr != 0:  # S_OK == 0
-            return False
-        exe = (buf.value or "").strip().lower()
-        if not exe or exe.endswith("openwith.exe"):
-            return False
-        return True
+        import winreg
+        # 1) The user's explicit default for this type (covers UWP apps via UserChoice).
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\%s\UserChoice" % ext) as k:
+                pid, _ = winreg.QueryValueEx(k, "ProgId")
+                if pid:
+                    return True
+        except OSError:
+            pass
+        # 2) Any registered "open with" handler (classic or Store app).
+        for hive, sub in ((winreg.HKEY_CURRENT_USER,
+                           r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\%s\OpenWithProgids" % ext),
+                          (winreg.HKEY_CLASSES_ROOT, ext + r"\OpenWithProgids")):
+            try:
+                with winreg.OpenKey(hive, sub) as k:
+                    if winreg.QueryInfoKey(k)[1] > 0:  # has values -> a handler exists
+                        return True
+            except OSError:
+                pass
+        # 3) HKCR\.ext default ProgID.
+        try:
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, ext) as k:
+                prog, _ = winreg.QueryValueEx(k, "")
+                if prog:
+                    return True
+        except OSError:
+            pass
     except Exception:
         return True  # can't determine -> allow the (non-blocking) attempt
+    return False
 
 
 def _open_local_file(path: str) -> Dict[str, Any]:
@@ -95,6 +174,54 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     if target.startswith("http://") or target.startswith("https://"):
         webbrowser.open(target)
         return {"status": "ok", "message": f"Opened URL {target}"}
+
+    # FOLDERS: "open my downloads folder", "documents", "desktop", etc. Resolve well-known
+    # user folders to the real profile path and open them in File Explorer. Also open any
+    # target that is itself an existing directory. Without this, a bare name like
+    # "downloads" was resolved relative to the worker's cwd -> WinError 2 (file not found).
+    _home = os.path.expanduser("~")
+    _norm = target.strip().lower()
+    for _pre in ("open ", "launch ", "start ", "go to ", "show me ", "show ", "a ", "an ", "the ", "my "):
+        while _norm.startswith(_pre):
+            _norm = _norm[len(_pre):].strip()
+    _norm = _norm.replace(" folder", "").replace(" directory", "").strip()
+    _known_folders = {
+        "downloads": "Downloads", "download": "Downloads",
+        "documents": "Documents", "document": "Documents", "docs": "Documents",
+        "desktop": "Desktop",
+        "pictures": "Pictures", "photos": "Pictures",
+        "screenshots": os.path.join("Pictures", "Screenshots"),
+        "music": "Music", "videos": "Videos", "movies": "Videos",
+        "home": "", "user": "", "user profile": "", "profile": "",
+    }
+    _dir_to_open = None
+    if _norm in _known_folders:
+        _rel = _known_folders[_norm]
+        _dir_to_open = os.path.join(_home, _rel) if _rel else _home
+    elif os.path.isdir(target):
+        _dir_to_open = os.path.abspath(target)
+    if _dir_to_open:
+        if not os.path.isdir(_dir_to_open):
+            return {"status": "error", "message": f"I couldn't find the folder '{target}'. It may not exist or isn't accessible."}
+        try:
+            subprocess.Popen(["explorer", _dir_to_open])
+            return {"status": "ok", "message": f"Opened {_dir_to_open} in File Explorer"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    # BROWSERS: open the user's NORMAL browser so they can sign in (the Selenium
+    # automation browser is flagged "not secure" by Google). "open chrome", "open a
+    # regular browser", "open edge", etc.
+    if _looks_like_browser(_norm):
+        try:
+            exe = _resolve_browser_exe(_norm)
+            if exe:
+                subprocess.Popen([exe])
+                return {"status": "ok", "message": f"Opened {os.path.basename(exe)} (your regular browser)"}
+            webbrowser.open_new("about:blank")
+            return {"status": "ok", "message": "Opened your default browser"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
     # Resolve whether the target is an EXISTING local file under the user's home.
     # Opening the user's own document is low-risk, so it doesn't need a separate

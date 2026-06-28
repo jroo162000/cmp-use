@@ -46,10 +46,10 @@ def _build_options():
     return opts
 
 def _get_driver():
-    """Return a live, Selenium-managed Chrome driver (creating one if needed).
-    Selenium Manager (selenium 4.6+) resolves the chromedriver automatically — this
-    replaces the old webdriver_manager download (which hung) and the fragile
-    remote-debugging attach/session-file dance."""
+    """Return a live Chrome driver. Prefers undetected-chromedriver with a PERSISTENT
+    profile so the automation browser can stay signed in and is far less likely to be
+    blocked by Google ('this browser or app may not be secure'). Falls back to plain
+    Selenium (also with a persistent profile + automation flags reduced)."""
     global _driver
     _lazy()
     if _driver is not None:
@@ -58,7 +58,32 @@ def _get_driver():
             return _driver
         except Exception:
             _driver = None
-    _driver = webdriver.Chrome(options=_build_options())
+    profile_dir = os.path.expanduser("~/.cmpuse/ava_chrome_profile")
+    try:
+        os.makedirs(profile_dir, exist_ok=True)
+    except Exception:
+        pass
+    # 1) undetected-chromedriver (stealth) — keeps Google/site sign-ins working.
+    try:
+        import undetected_chromedriver as uc
+        uopts = uc.ChromeOptions()
+        uopts.add_argument("--start-maximized")
+        uopts.add_argument("--disable-dev-shm-usage")
+        uopts.add_argument("--no-first-run")
+        uopts.add_argument("--no-default-browser-check")
+        _driver = uc.Chrome(options=uopts, user_data_dir=profile_dir, use_subprocess=True)
+        return _driver
+    except Exception:
+        pass
+    # 2) Fallback: plain Selenium-managed Chrome, persistent profile, fewer automation flags.
+    opts = _build_options()
+    try:
+        opts.add_argument(f"--user-data-dir={profile_dir}")
+        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+        opts.add_experimental_option("useAutomationExtension", False)
+    except Exception:
+        pass
+    _driver = webdriver.Chrome(options=opts)
     return _driver
 
 def get_driver_from_session():
@@ -70,6 +95,101 @@ def _safe_quit(d):
         d.quit()
     except Exception:
         pass
+
+
+# ---- Robust, descriptor-based form helpers (work across arbitrary sites) ----
+
+def _find_input(driver, descriptor):
+    """Find a text/select/textarea input by a human descriptor: a CSS selector, an exact
+    name/id, or a fuzzy match on label / placeholder / aria-label / name / id."""
+    d = (descriptor or "").strip()
+    if not d:
+        return None
+    if d[0] in "#.[":
+        try:
+            return driver.find_element(By.CSS_SELECTOR, d)
+        except Exception:
+            pass
+    for by, sel in ((By.NAME, d), (By.ID, d), (By.CSS_SELECTOR, f'[name="{d}"]')):
+        try:
+            return driver.find_element(by, sel)
+        except Exception:
+            pass
+    js = r'''
+    const want = (arguments[0]||'').toLowerCase();
+    const els = [...document.querySelectorAll('input, textarea, select')].filter(el => {
+      const t = (el.type||'').toLowerCase();
+      return !['hidden','submit','button','image','file'].includes(t);
+    });
+    const ctx = (el) => {
+      let s = '';
+      if (el.id){const l=document.querySelector('label[for="'+CSS.escape(el.id)+'"]'); if(l)s+=' '+l.innerText;}
+      const lab = el.closest && el.closest('label'); if(lab)s+=' '+lab.innerText;
+      s += ' '+(el.getAttribute('aria-label')||'')+' '+(el.placeholder||'')+' '+(el.name||'')+' '+(el.id||'');
+      return s.toLowerCase();
+    };
+    let best=null;
+    for(const el of els){ if(ctx(el).includes(want)){best=el;break;} }
+    return best;
+    '''
+    try:
+        return driver.execute_script(js, d)
+    except Exception:
+        return None
+
+
+def _fill_element(driver, el, value):
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+    except Exception:
+        pass
+    if (getattr(el, 'tag_name', '') or '').lower() == 'select':
+        try:
+            from selenium.webdriver.support.ui import Select
+            try:
+                Select(el).select_by_visible_text(str(value)); return
+            except Exception:
+                Select(el).select_by_value(str(value)); return
+        except Exception:
+            pass
+    try:
+        el.clear()
+    except Exception:
+        pass
+    try:
+        el.send_keys(str(value))
+    except Exception:
+        driver.execute_script(
+            "arguments[0].value=arguments[1];"
+            "arguments[0].dispatchEvent(new Event('input',{bubbles:true}));"
+            "arguments[0].dispatchEvent(new Event('change',{bubbles:true}));", el, str(value))
+
+
+def _find_file_input(driver, descriptor=''):
+    try:
+        if descriptor:
+            el = _find_input(driver, descriptor)
+            if el and (el.get_attribute('type') or '').lower() == 'file':
+                return el
+        return driver.find_element(By.CSS_SELECTOR, 'input[type=file]')
+    except Exception:
+        return None
+
+
+def _find_clickable_by_text(driver, label):
+    js = r'''
+    const want = (arguments[0]||'').toLowerCase().trim();
+    const els = [...document.querySelectorAll('button, input[type=submit], input[type=button], a, [role=button]')];
+    const txt = (el) => (el.innerText||el.value||el.getAttribute('aria-label')||'').trim().toLowerCase();
+    let best = els.find(el => txt(el) === want);
+    if(!best) best = els.find(el => txt(el).includes(want));
+    return best || null;
+    '''
+    try:
+        return driver.execute_script(js, label)
+    except Exception:
+        return None
+
 
 def _plan(args: Dict[str, Any]) -> Dict[str, Any]:
     action = args.get("action", "launch")
@@ -104,9 +224,18 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
         if action == "launch":
             driver = _get_driver()
             if url:
-                driver.get(url)
+                target = str(url).strip()
+                from urllib.parse import quote_plus, urlparse
+                import re
+                if urlparse(target).scheme:
+                    nav_url = target
+                elif re.match(r"^(localhost|(\d{1,3}\.){3}\d{1,3}|[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+)(:\d+)?(/.*)?$", target):
+                    nav_url = "https://" + target
+                else:
+                    nav_url = "https://www.google.com/search?q=" + quote_plus(target)
+                driver.get(nav_url)
                 time.sleep(1)
-            return {"status": "ok", "message": f"Chrome browser launched to {url}", "current_url": driver.current_url}
+            return {"status": "ok", "message": f"Chrome browser launched to {nav_url if url else url}", "current_url": driver.current_url}
 
         elif action == "close":
             global _driver
@@ -125,9 +254,18 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
         if action == "navigate":
             if not url:
                 return {"status": "error", "message": "URL required for navigation"}
-            driver.get(url)
+            target = str(url).strip()
+            from urllib.parse import quote_plus, urlparse
+            import re
+            if urlparse(target).scheme:
+                nav_url = target
+            elif re.match(r"^(localhost|(\d{1,3}\.){3}\d{1,3}|[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+)(:\d+)?(/.*)?$", target):
+                nav_url = "https://" + target
+            else:
+                nav_url = "https://www.google.com/search?q=" + quote_plus(target)
+            driver.get(nav_url)
             time.sleep(2)
-            return {"status": "ok", "message": f"Navigated to {url}", "current_url": driver.current_url}
+            return {"status": "ok", "message": f"Navigated to {nav_url}", "current_url": driver.current_url}
 
         elif action == "click":
             if not selector:
@@ -176,6 +314,162 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
                 except Exception as js_error:
                     return {"status": "error", "message": f"Failed to type into {selector}: {str(e)}"}
         
+        elif action in ("get_fields", "read_page", "inspect_form", "fields"):
+            js = r'''
+            const out = {fields: [], buttons: [], url: location.href, title: document.title};
+            const labelFor = (el) => {
+              let t = '';
+              if (el.id) { const l = document.querySelector('label[for="'+CSS.escape(el.id)+'"]'); if (l) t = l.innerText; }
+              if (!t && el.closest) { const l = el.closest('label'); if (l) t = l.innerText; }
+              return (t || el.getAttribute('aria-label') || el.placeholder || el.name || el.id || '').trim().slice(0,80);
+            };
+            document.querySelectorAll('input, textarea, select').forEach(el => {
+              const type = (el.type || el.tagName).toLowerCase();
+              if (['hidden','submit','button','image'].includes(type)) return;
+              const r = el.getBoundingClientRect();
+              if (r.width === 0 && r.height === 0) return;
+              out.fields.push({label: labelFor(el), name: el.name||'', id: el.id||'', type, placeholder: el.placeholder||'', value: (type==='password'?'':(el.value||'')).slice(0,40), required: !!el.required});
+            });
+            document.querySelectorAll('button, input[type=submit], a[role=button], [role=button]').forEach(el => {
+              const t = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
+              if (t) out.buttons.push(t.slice(0,50));
+            });
+            return JSON.stringify(out);
+            '''
+            import json as _json
+            data = driver.execute_script(js)
+            parsed = _json.loads(data) if isinstance(data, str) else (data or {})
+            buttons = list(dict.fromkeys(parsed.get('buttons', [])))[:25]
+            fields = parsed.get('fields', [])[:60]
+            return {"status": "ok", "url": parsed.get('url'), "title": parsed.get('title'),
+                    "fields": fields, "buttons": buttons,
+                    "message": f"{len(fields)} field(s) and {len(buttons)} button(s) on the page"}
+
+        elif action in ("fill_field", "fill", "set_field"):
+            field = args.get("field") or args.get("label") or args.get("name") or args.get("selector") or ""
+            value = args.get("value", args.get("text", ""))
+            if not field:
+                return {"status": "error", "message": "field (label/name/placeholder) required"}
+            el = _find_input(driver, field)
+            if not el:
+                return {"status": "error", "message": f"Couldn't find a field matching '{field}'"}
+            _fill_element(driver, el, value)
+            time.sleep(0.4)
+            return {"status": "ok", "message": f"Filled '{field}'"}
+
+        elif action in ("upload_file", "attach_file", "upload", "attach"):
+            file_path = args.get("file_path") or args.get("path") or args.get("file") or ""
+            field = args.get("field") or args.get("label") or args.get("selector") or ""
+            if not file_path or not os.path.isfile(file_path):
+                return {"status": "error", "message": f"file_path required and must exist: {file_path}"}
+            el = _find_file_input(driver, field)
+            if not el:
+                return {"status": "error", "message": "No file-upload field found on this page"}
+            try:
+                driver.execute_script("arguments[0].scrollIntoView();", el)
+            except Exception:
+                pass
+            el.send_keys(os.path.abspath(file_path))
+            time.sleep(1)
+            return {"status": "ok", "message": f"Uploaded {os.path.basename(file_path)}"}
+
+        elif action in ("click_text", "click_button", "press"):
+            label = args.get("text") or args.get("label") or args.get("button") or ""
+            if not label:
+                return {"status": "error", "message": "text/label of the button or link to click is required"}
+            el = _find_clickable_by_text(driver, label)
+            if not el:
+                return {"status": "error", "message": f"Couldn't find a button/link labeled '{label}'"}
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                time.sleep(0.4)
+                el.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", el)
+            time.sleep(2)
+            return {"status": "ok", "message": f"Clicked '{label}'", "current_url": driver.current_url}
+
+        elif action in ("fill_form", "fill_and_submit"):
+            fields = args.get("fields") or {}
+            if isinstance(fields, str):
+                try:
+                    import json as _json
+                    fields = _json.loads(fields)
+                except Exception:
+                    fields = {}
+            file_path = args.get("file_path") or args.get("file") or ""
+            file_field = args.get("file_field") or ""
+            do_submit = bool(args.get("submit", False))
+            submit_text = args.get("submit_text") or "submit"
+            filled, missed = [], []
+            for k, v in (fields or {}).items():
+                el = _find_input(driver, k)
+                if el:
+                    _fill_element(driver, el, v); filled.append(k)
+                else:
+                    missed.append(k)
+                time.sleep(0.2)
+            uploaded = None
+            if file_path and os.path.isfile(file_path):
+                fel = _find_file_input(driver, file_field)
+                if fel:
+                    try:
+                        fel.send_keys(os.path.abspath(file_path)); uploaded = os.path.basename(file_path)
+                    except Exception:
+                        pass
+            submitted = False
+            if do_submit:
+                bel = _find_clickable_by_text(driver, submit_text)
+                if bel:
+                    try:
+                        bel.click()
+                    except Exception:
+                        driver.execute_script("arguments[0].click();", bel)
+                    time.sleep(2); submitted = True
+            msg = f"Filled {len(filled)} field(s)"
+            if missed:
+                msg += f"; couldn't find {len(missed)} ({', '.join(missed[:5])})"
+            if uploaded:
+                msg += f"; uploaded {uploaded}"
+            if submitted:
+                msg += "; submitted"
+            return {"status": "ok", "filled": filled, "missed": missed, "uploaded": uploaded,
+                    "submitted": submitted, "current_url": driver.current_url, "message": msg}
+
+        elif action in ("wait_for", "wait_until", "wait"):
+            target = args.get("selector") or args.get("text") or args.get("for") or ""
+            secs = int(args.get("timeout", 15) or 15)
+            if not target:
+                time.sleep(min(secs, 5))
+                return {"status": "ok", "message": f"Waited {min(secs, 5)}s"}
+            deadline = time.time() + secs
+            found = False
+            while time.time() < deadline:
+                try:
+                    if target.strip()[0] in "#.[":
+                        els = driver.find_elements(By.CSS_SELECTOR, target)
+                        if els and any(e.is_displayed() for e in els):
+                            found = True
+                            break
+                    else:
+                        body = driver.find_element(By.TAG_NAME, "body").text or ""
+                        if target.lower() in body.lower():
+                            found = True
+                            break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+            return {"status": "ok" if found else "timeout",
+                    "message": (f"'{target}' appeared" if found else f"'{target}' didn't appear within {secs}s")}
+
+        elif action in ("get_text", "read_text", "page_text"):
+            try:
+                txt = driver.find_element(By.TAG_NAME, "body").text or ""
+            except Exception:
+                txt = ""
+            return {"status": "ok", "url": driver.current_url, "title": driver.title,
+                    "text": txt[:4000], "message": f"Read {len(txt)} characters from the page"}
+
         else:
             return {"status": "error", "message": f"Unknown action: {action}"}
 
@@ -184,7 +478,16 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
 
 TOOL = Tool(
     name="browser_automation",
-    summary="Complete visible browser automation - launch, navigate, click, type, search, and interact with web pages",
+    summary=("Drive a real (stealth, signed-in) Chrome to complete tasks on ANY website — forms, "
+             "applications, portals. WORKFLOW to fill something out: (1) action=navigate url=<page>. "
+             "(2) action=get_fields — returns the page's fields (label/name/type) and buttons, so you "
+             "target real fields and never guess. (3) action=fill_form with fields={\"<label or name>\":\"<value>\", ...} "
+             "(matched fuzzily by label/placeholder/name); add file_path=<full path> to upload an attachment "
+             "(e.g. a resume), and submit=true + submit_text=<button label> to submit. Or step by step: "
+             "fill_field (field,value), upload_file (file_path), click_text (text). If the file is in Gmail, "
+             "download it first with comm_ops download_attachment, then pass its path here. For pages that load "
+             "dynamically use wait_for (selector or text); use get_text to READ the page's instructions/errors. "
+             "Also: navigate, click (CSS), type (CSS), close."),
     plan=_plan,
     run=lambda args, dry_run: (_lazy(), _run(args, dry_run))[1],
     permissions={"confirm": False}

@@ -137,7 +137,8 @@ class CommunicationManager:
                     'from': next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown'),
                     'to': next((h['value'] for h in headers if h['name'] == 'To'), 'Unknown'),
                     'subject': next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject'),
-                    'date': next((h['value'] for h in headers if h['name'] == 'Date'), 'Unknown')
+                    'date': next((h['value'] for h in headers if h['name'] == 'Date'), 'Unknown'),
+                    'attachments': _gmail_attachment_names(message.get('payload', {}))
                 }
 
                 emails.append(email_data)
@@ -145,6 +146,42 @@ class CommunicationManager:
             return emails
         except HttpError as error:
             raise Exception(f'Gmail API error: {error}')
+
+    def download_attachment_gmail(self, message_id, filename=None, attachment_id=None, save_dir=None):
+        """Download an attachment from a Gmail message to disk. Returns {path, filename, bytes}."""
+        service = self.get_gmail_service()
+        message = service.users().messages().get(userId='me', id=message_id).execute()
+        parts = []  # (filename, attachmentId)
+        def _walk(p):
+            if not p:
+                return
+            fn = p.get('filename')
+            body = p.get('body') or {}
+            aid = body.get('attachmentId')
+            if fn and aid:
+                parts.append((fn, aid))
+            for sub in (p.get('parts') or []):
+                _walk(sub)
+        _walk(message.get('payload', {}))
+        if not parts:
+            raise Exception("that email has no downloadable attachments")
+        chosen = None
+        if attachment_id:
+            chosen = next((p for p in parts if p[1] == attachment_id), None)
+        if not chosen and filename:
+            chosen = next((p for p in parts if filename.lower() in (p[0] or '').lower()), None)
+        if not chosen:
+            chosen = parts[0]
+        fn, aid = chosen
+        att = service.users().messages().attachments().get(
+            userId='me', messageId=message_id, id=aid).execute()
+        data = base64.urlsafe_b64decode(att['data'].encode('utf-8'))
+        save_dir = save_dir or os.path.join(os.path.expanduser('~'), 'Downloads')
+        os.makedirs(save_dir, exist_ok=True)
+        path = os.path.join(save_dir, fn)
+        with open(path, 'wb') as f:
+            f.write(data)
+        return {'path': path, 'filename': fn, 'bytes': len(data)}
 
     def reply_email_gmail(self, body, message_id=None, query=None):
         """Send a threaded reply (to the original sender) to an email.
@@ -208,6 +245,25 @@ class CommunicationManager:
         return message
 
 comm_manager = CommunicationManager()
+
+def _gmail_attachment_names(payload):
+    """Collect attachment filenames from a Gmail message payload (recursively)."""
+    names = []
+    def walk(p):
+        if not p:
+            return
+        fn = p.get('filename')
+        body = p.get('body') or {}
+        if fn and (body.get('attachmentId') or body.get('size')):
+            names.append(fn)
+        for sub in (p.get('parts') or []):
+            walk(sub)
+    try:
+        walk(payload)
+    except Exception:
+        pass
+    return names
+
 
 def _plan(args: Dict[str, Any]) -> Dict[str, Any]:
     action = args.get("action", "send_email")
@@ -281,6 +337,92 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
             else:
                 return {"status": "error", "message": f"Unsupported email provider: {provider}"}
 
+        elif action in ("search_emails", "search", "find_email", "find_emails", "search_gmail", "search_inbox"):
+            query = (args.get("query") or args.get("q") or args.get("search") or args.get("keyword") or "").strip()
+            max_results = int(args.get("max_results", 30) or 30)
+            provider = args.get("provider", "gmail")
+            attachments_only = bool(args.get("attachments_only") or args.get("has_attachment"))
+            if not query:
+                return {"status": "error", "message": "query required: what to search Gmail for (a keyword, sender, subject, or filename)"}
+            if provider != "gmail":
+                return {"status": "error", "message": f"Unsupported provider: {provider}"}
+            _ops = ("from:", "to:", "subject:", "filename:", "has:", "label:", "in:",
+                    "newer_than:", "older_than:", "after:", "before:", "is:", " OR ")
+            has_ops = any(op in query for op in _ops)
+            q = query
+            if attachments_only and "has:attachment" not in q and "filename:" not in q:
+                q = f"has:attachment ({q})"
+            try:
+                emails = comm_manager.read_emails_gmail(q, max_results)
+                # Plain-word search with no hits: retry once also matching attachment filenames.
+                if not emails and not has_ops:
+                    first = (query.split() or [query])[0]
+                    emails = comm_manager.read_emails_gmail(
+                        f"{query} OR filename:{first} OR has:attachment {first}", max_results)
+                with_att = [e for e in emails if e.get("attachments")]
+                return {
+                    "status": "ok",
+                    "emails": emails,
+                    "count": len(emails),
+                    "with_attachments": len(with_att),
+                    "query": q,
+                    "message": f"Found {len(emails)} email(s) matching '{query}'"
+                               + (f"; {len(with_att)} have attachments" if with_att else "")
+                }
+            except Exception as gmail_error:
+                return {"status": "error", "message": f"Gmail search error: {str(gmail_error)}"}
+
+        elif action in ("download_attachment", "save_attachment", "download_file", "get_attachment"):
+            provider = args.get("provider", "gmail")
+            if provider != "gmail":
+                return {"status": "error", "message": f"Unsupported provider: {provider}"}
+            message_id = args.get("message_id") or args.get("email_id") or args.get("id")
+            filename = args.get("filename") or args.get("file") or args.get("name")
+            attachment_id = args.get("attachment_id")
+            save_dir = args.get("save_dir") or args.get("dir") or args.get("folder")
+            query = args.get("query") or args.get("q")
+            # If no explicit message id, find the email by search (prefer one whose attachment matches).
+            if not message_id:
+                if not query and not filename:
+                    return {"status": "error", "message": "Provide message_id, or a filename/query so I can find the email"}
+                search_q = (query or "").strip()
+                if filename and "filename:" not in search_q:
+                    base = (os.path.splitext(filename)[0] or filename).split()[0] if filename.strip() else ""
+                    if base:
+                        search_q = (search_q + f" filename:{base}").strip()
+                if "has:attachment" not in search_q and "filename:" not in search_q:
+                    search_q = ("has:attachment " + search_q).strip()
+                try:
+                    found = comm_manager.read_emails_gmail(search_q or "has:attachment", 10)
+                except Exception as e:
+                    return {"status": "error", "message": f"Gmail search error: {str(e)}"}
+                match = None
+                for e in found:
+                    atts = e.get("attachments") or []
+                    if filename and any(filename.lower().split('.')[0] in (a or '').lower() for a in atts):
+                        match = e
+                        break
+                    if not filename and atts:
+                        match = e
+                        break
+                if not match:
+                    match = next((e for e in found if e.get("attachments")), None)
+                if not match:
+                    return {"status": "error", "message": f"Couldn't find an email with an attachment matching '{filename or query}'"}
+                message_id = match["id"]
+            try:
+                res = comm_manager.download_attachment_gmail(
+                    message_id, filename=filename, attachment_id=attachment_id, save_dir=save_dir)
+                return {
+                    "status": "ok",
+                    "path": res["path"],
+                    "filename": res["filename"],
+                    "size_kb": round(res["bytes"] / 1024, 1),
+                    "message": f"Downloaded {res['filename']} to {res['path']}"
+                }
+            except Exception as e:
+                return {"status": "error", "message": f"Download failed: {str(e)}"}
+
         elif action == "send_sms":
             to = args.get("to")
             body = args.get("body")
@@ -353,7 +495,16 @@ TOOL = Tool(
              "use action=reply with query set to the person's name or email (e.g. query='trinity') and body set to your message — "
              "it finds that person's most recent email and replies to them in-thread. Prefer reply over send_email for any 'reply to <name>' request. "
              "To send a NEW email: action=send_email with to (full address) + subject + body. "
-             "Also: action=read_emails (query optional), action=send_sms (Twilio), action=mark_read."),
+             "To SEARCH Gmail — find ANY email, attachment, resume, or file by keyword/sender/subject/filename — use "
+             "action=search_emails with query=<terms>. This searches ALL mail (not just unread) and returns each email's "
+             "attachment filenames. The query supports Gmail operators: filename:resume, has:attachment, from:alice, "
+             "subject:invoice, newer_than:30d, \"exact phrase\". For a resume/attachment, pass attachments_only=true (or "
+             "filename:<name>). ALWAYS use search_emails (NOT read_emails) when the user asks you to find/search/look for "
+             "something in their email. action=read_emails only lists recent mail (default unread, ~10). "
+             "To DOWNLOAD an attachment (e.g. a resume) use action=download_attachment with filename=<name> (and optional query/message_id); "
+             "it finds the email, saves the file to the Downloads folder, and returns its full path. "
+             "To ATTACH file(s) to an email, use action=send_email with attachments=[\"<full path>\", ...] — download the file first if it lives in an email. "
+             "Also: action=send_sms (Twilio), action=mark_read."),
     plan=_plan,
     run=lambda args, dry_run: (_lazy(), _run(args, dry_run))[1],
     permissions={"confirm": True}  # Sending communications requires confirmation
