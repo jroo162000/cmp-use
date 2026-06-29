@@ -10,7 +10,7 @@ _TOOL_MODULES = [
     "learning_db", "iot_ops", "proactive_ops", "remote_ops", "camera_ops",
     "security_ops", "comm_ops", "calendar_ops", "voice_ops", "analysis_ops",
     "test_echo", "computer_use", "computer_use_control", "self_awareness",
-    "self_mod", "profile_ops", "app_control", "file_resolve",
+    "self_mod", "profile_ops", "app_control", "file_resolve", "self_diagnostics",
 ]
 
 __all__ = []
