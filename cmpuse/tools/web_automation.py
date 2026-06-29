@@ -470,6 +470,131 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
             return {"status": "ok", "url": driver.current_url, "title": driver.title,
                     "text": txt[:4000], "message": f"Read {len(txt)} characters from the page"}
 
+        elif action in ("current", "where", "current_url", "current_tab"):
+            return {"status": "ok", "current_url": driver.current_url, "title": driver.title,
+                    "message": f"Currently on \"{driver.title}\" — {driver.current_url}"}
+
+        elif action in ("list_tabs", "tabs", "get_tabs"):
+            handles = driver.window_handles
+            cur = driver.current_window_handle
+            tabs = []
+            for i, h in enumerate(handles):
+                try:
+                    driver.switch_to.window(h)
+                    tabs.append({"index": i, "title": driver.title, "url": driver.current_url,
+                                 "active": (h == cur)})
+                except Exception:
+                    tabs.append({"index": i, "title": "(unavailable)", "url": "", "active": (h == cur)})
+            try:
+                driver.switch_to.window(cur)  # restore the originally-active tab
+            except Exception:
+                pass
+            listing = "; ".join(f"[{t['index']}] {t['title']}" + (" *" if t['active'] else "") for t in tabs)
+            return {"status": "ok", "tabs": tabs, "count": len(tabs),
+                    "message": f"{len(tabs)} tab(s) open: {listing}"}
+
+        elif action in ("switch_tab", "select_tab", "goto_tab", "tab"):
+            handles = driver.window_handles
+            idx = args.get("index", args.get("tab"))
+            match = str(args.get("title") or args.get("url") or args.get("text") or "").strip().lower()
+            target = None
+            if idx is not None and str(idx).strip() != "":
+                try:
+                    i = int(idx)
+                    if -len(handles) <= i < len(handles):
+                        target = handles[i]
+                except Exception:
+                    target = None
+            if target is None and match:
+                cur = driver.current_window_handle
+                for h in handles:
+                    try:
+                        driver.switch_to.window(h)
+                        if match in (driver.title or "").lower() or match in (driver.current_url or "").lower():
+                            target = h
+                            break
+                    except Exception:
+                        pass
+                if target is None:
+                    try:
+                        driver.switch_to.window(cur)
+                    except Exception:
+                        pass
+            if target is None:
+                return {"status": "error",
+                        "message": "No matching tab — pass index (0-based) or a title/url substring. Use list_tabs to see them."}
+            driver.switch_to.window(target)
+            return {"status": "ok", "current_url": driver.current_url, "title": driver.title,
+                    "message": f"Switched to \"{driver.title}\""}
+
+        elif action in ("new_tab", "open_tab"):
+            before = set(driver.window_handles)
+            try:
+                driver.switch_to.new_window('tab')
+            except Exception:
+                driver.execute_script("window.open('about:blank','_blank');")
+                new = [h for h in driver.window_handles if h not in before]
+                if new:
+                    driver.switch_to.window(new[-1])
+            if url:
+                target = str(url).strip()
+                from urllib.parse import quote_plus, urlparse
+                import re
+                if urlparse(target).scheme:
+                    nav_url = target
+                elif re.match(r"^(localhost|(\d{1,3}\.){3}\d{1,3}|[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+)(:\d+)?(/.*)?$", target):
+                    nav_url = "https://" + target
+                else:
+                    nav_url = "https://www.google.com/search?q=" + quote_plus(target)
+                driver.get(nav_url)
+                time.sleep(1)
+            return {"status": "ok", "current_url": driver.current_url, "title": driver.title,
+                    "count": len(driver.window_handles),
+                    "message": f"Opened a new tab ({len(driver.window_handles)} now open)"}
+
+        elif action in ("close_tab",):
+            if len(driver.window_handles) <= 1:
+                return {"status": "error",
+                        "message": "Only one tab is open — use action=close to end the whole browser session instead."}
+            driver.close()
+            driver.switch_to.window(driver.window_handles[-1])
+            return {"status": "ok", "current_url": driver.current_url, "title": driver.title,
+                    "count": len(driver.window_handles),
+                    "message": f"Closed the tab; now on \"{driver.title}\""}
+
+        elif action in ("check_access", "detect_blockers", "check_captcha", "is_blocked"):
+            # HONEST detection only. AVA never solves CAPTCHAs — she reports them so the user can.
+            js = r'''
+            const out = {captcha:false, captcha_kind:'', login_wall:false, signals:[]};
+            const ifr = [...document.querySelectorAll('iframe')].map(f => (f.getAttribute('src')||'').toLowerCase());
+            const html = (document.documentElement.innerHTML || '').toLowerCase();
+            if (ifr.some(s => s.includes('recaptcha'))) { out.captcha=true; out.captcha_kind='reCAPTCHA'; }
+            else if (ifr.some(s => s.includes('hcaptcha'))) { out.captcha=true; out.captcha_kind='hCaptcha'; }
+            else if (document.querySelector('.cf-turnstile, iframe[src*="challenges.cloudflare.com"], #challenge-form, #cf-challenge-running, iframe[src*="turnstile"]')) { out.captcha=true; out.captcha_kind='Cloudflare'; }
+            else if (/i'?m not a robot|verify (you are|that you are) (a )?human|are you a robot|complete the captcha|press *(and|&) *hold|unusual traffic/.test(html)) { out.captcha=true; out.captcha_kind='challenge'; }
+            const pw = document.querySelector('input[type=password]');
+            const head = (document.body ? document.body.innerText : '').toLowerCase().slice(0, 4000);
+            if (pw) { out.login_wall=true; out.signals.push('password field'); }
+            else if (/\b(sign in|log in|login|sign-in)\b/.test(head)) { out.signals.push('sign-in text'); }
+            out.title = document.title; out.url = location.href;
+            return JSON.stringify(out);
+            '''
+            import json as _json
+            data = driver.execute_script(js)
+            parsed = _json.loads(data) if isinstance(data, str) else (data or {})
+            msgs = []
+            if parsed.get('captcha'):
+                msgs.append(f"a {parsed.get('captcha_kind') or 'CAPTCHA'} challenge is on the page — I can't solve CAPTCHAs, so you'll need to complete it")
+            if parsed.get('login_wall'):
+                msgs.append("a sign-in / password wall is present — you'll need to log in")
+            if not msgs:
+                msgs.append("no CAPTCHA or login wall detected — the page looks accessible")
+            return {"status": "ok", "captcha": bool(parsed.get('captcha')),
+                    "captcha_kind": parsed.get('captcha_kind', ''),
+                    "login_wall": bool(parsed.get('login_wall')),
+                    "current_url": parsed.get('url'), "title": parsed.get('title'),
+                    "message": "; ".join(msgs)}
+
         else:
             return {"status": "error", "message": f"Unknown action: {action}"}
 
@@ -487,7 +612,10 @@ TOOL = Tool(
              "fill_field (field,value), upload_file (file_path), click_text (text). If the file is in Gmail, "
              "download it first with comm_ops download_attachment, then pass its path here. For pages that load "
              "dynamically use wait_for (selector or text); use get_text to READ the page's instructions/errors. "
-             "Also: navigate, click (CSS), type (CSS), close."),
+             "TABS: list_tabs (see all open tabs with index/title/url), switch_tab (index=N or title/url substring), "
+             "new_tab (optional url), close_tab. current — confirm which page/URL you're actually on. "
+             "check_access — detect a CAPTCHA or login wall BEFORE acting (it reports them honestly; AVA never "
+             "solves CAPTCHAs, she tells the user to). Also: navigate, click (CSS), type (CSS), close (ends session)."),
     plan=_plan,
     run=lambda args, dry_run: (_lazy(), _run(args, dry_run))[1],
     permissions={"confirm": False}

@@ -8,6 +8,70 @@ from typing import Any, Dict, List
 
 from ..tool_registry import Tool, register
 
+
+def _force_foreground(hwnd) -> bool:
+    """Reliably bring a window to the foreground on Windows. SetForegroundWindow alone
+    frequently fails because of the OS foreground lock; the AttachThreadInput trick (plus a
+    benign Alt tap and a restore-if-minimized) is the robust path. Returns True only if the
+    window actually ended up in the foreground (verified) — callers rely on that so they
+    don't send keystrokes to the wrong window."""
+    if not hwnd:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return False
+    u = ctypes.windll.user32
+    k = ctypes.windll.kernel32
+    try:
+        u.GetForegroundWindow.restype = wintypes.HWND
+        u.SetForegroundWindow.argtypes = [wintypes.HWND]
+        u.BringWindowToTop.argtypes = [wintypes.HWND]
+        u.IsIconic.argtypes = [wintypes.HWND]
+        u.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        u.GetWindowThreadProcessId.restype = wintypes.DWORD
+        u.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+    except Exception:
+        pass
+    SW_RESTORE, SW_SHOW = 9, 5
+    try:
+        if u.IsIconic(hwnd):
+            u.ShowWindow(hwnd, SW_RESTORE)
+        fg = u.GetForegroundWindow()
+        cur = k.GetCurrentThreadId()
+        tgt = u.GetWindowThreadProcessId(hwnd, None)
+        fgt = u.GetWindowThreadProcessId(fg, None) if fg else 0
+        attached = []
+        try:
+            if fgt and fgt != tgt and u.AttachThreadInput(fgt, tgt, True):
+                attached.append((fgt, tgt))
+            if cur != tgt and u.AttachThreadInput(cur, tgt, True):
+                attached.append((cur, tgt))
+            try:  # benign Alt tap unsticks the foreground lock on some Windows builds
+                u.keybd_event(0x12, 0, 0, 0)
+                u.keybd_event(0x12, 0, 2, 0)
+            except Exception:
+                pass
+            u.ShowWindow(hwnd, SW_SHOW)
+            u.BringWindowToTop(hwnd)
+            u.SetForegroundWindow(hwnd)
+        finally:
+            for a, b in attached:
+                try:
+                    u.AttachThreadInput(a, b, False)
+                except Exception:
+                    pass
+        time.sleep(0.12)
+        try:
+            return int(u.GetForegroundWindow() or 0) == int(hwnd)
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
 def _plan(args: Dict[str, Any]) -> Dict[str, Any]:
     action = args.get("action", "list")
     title = args.get("title", "")
@@ -67,6 +131,18 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
                 "count": len(window_list)
             }
 
+        if action in ("active", "get_active", "foreground"):
+            fg_title = ""
+            try:
+                for w in gw.getAllWindows():
+                    if w.title and w.isActive:
+                        fg_title = w.title
+                        break
+            except Exception:
+                pass
+            return {"status": "ok", "title": fg_title,
+                    "message": f"Active window: {fg_title or 'unknown'}"}
+
         # For all other actions, we need a window title or match
         # Accept common synonyms used by various callers
         title_match = (
@@ -93,8 +169,18 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
         window = windows[0]
 
         if action == "focus":
-            window.activate()
-            return {"status": "ok", "message": f"Focused window: {window.title}"}
+            hwnd = getattr(window, "_hWnd", None)
+            ok = _force_foreground(hwnd)
+            if not ok:
+                try:
+                    window.activate()
+                    ok = True
+                except Exception:
+                    ok = False
+            return {"status": "ok" if ok else "error",
+                    "message": (f"Focused window: {window.title}" if ok
+                                else f"Found '{window.title}' but couldn't bring it to the foreground"),
+                    "title": window.title, "foreground": ok}
 
         elif action == "minimize":
             window.minimize()
@@ -141,9 +227,13 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
 
 TOOL = Tool(
     name="window_ops",
-    summary=("Window management — close, focus, minimize, maximize, move, resize, or list windows. "
-             "To CLOSE an app/window pass action='close' and title=<app or window name> (partial, case-insensitive, "
-             "e.g. title='paint' to close Paint). Closing sends a normal close, so the app still prompts to save if needed."),
+    summary=("Window management — list, active (the foreground window's title), focus, close, minimize, "
+             "maximize, move, resize. action='focus' title=<app/window name> RELIABLY brings a window to "
+             "the foreground (verified) and reports foreground:true/false. action='active' returns the title "
+             "of whatever window is in front right now. To CLOSE an app/window pass action='close' and "
+             "title=<app or window name> (partial, case-insensitive, e.g. title='paint'); closing sends a "
+             "normal close so the app still prompts to save if needed. To send a SAVE/PRINT/NEXT-PAGE/etc. "
+             "command to an app, prefer app_control (it focuses first, then sends the command)."),
     plan=_plan,
     run=_run,
 )
