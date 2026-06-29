@@ -163,6 +163,12 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     limit = int(args.get("limit", 8) or 8)
     cands = _gather(folders, exts, name_sub, limit)
     if not cands:
+        # If a requested folder isn't a real directory, say so and list the valid resolver roots
+        # instead of silently returning nothing.
+        invalid_paths = [f for f in folders if not os.path.isdir(f)]
+        if invalid_paths:
+            allowed_roots = sorted({os.path.normpath(p) for p in (_HOME, os.environ.get("USERPROFILE", "")) if p})
+            return {"status": "error", "message": f"Requested path(s) not accessible: {invalid_paths}. Allowed resolver roots: {allowed_roots}", "candidates": []}
         # retry without the name filter if it was a weak guess
         if name_sub:
             cands = _gather(folders, exts, "", limit)
