@@ -11,6 +11,10 @@ Commands: open_file, save, save_as, print, find, find_next, select_all, copy, pa
 undo, redo, new, new_tab, close_tab, reload/refresh, zoom_in, zoom_out, zoom_reset,
 fullscreen, play_pause, mute, next, prev, top, bottom, address_bar, bold, italic, close_app.
 next/prev are context-aware (doc/pdf -> page; media -> track; slideshow -> slide).
+
+Also: a safe read-only foreground-window/system-state command (inspect_foreground) that
+returns the active window title, process name/PID, executable path when available, and
+window bounds, without changing approval gates or taking external actions.
 """
 
 import time
@@ -65,6 +69,9 @@ _ALIASES = {
     "select all": "select_all", "find next": "find_next", "open file": "open_file",
     "go to top": "top", "go to bottom": "bottom", "address bar": "address_bar",
     "close app": "close_app", "close the app": "close_app", "quit": "close_app",
+    "inspect foreground": "inspect_foreground", "foreground window": "inspect_foreground",
+    "active window": "inspect_foreground", "what's in front": "inspect_foreground",
+    "whats in front": "inspect_foreground", "what app is in front": "inspect_foreground",
 }
 
 
@@ -108,8 +115,74 @@ def _find_window(title: str):
     return wins[0] if wins else None
 
 
+def _inspect_foreground() -> Dict[str, Any]:
+    """READ-ONLY: report the foreground window — title, bounds, and (best-effort) process name,
+    PID, and executable path. Sends no keystrokes, takes no external action, changes no approval
+    gates. Degrades gracefully when a piece of info isn't available."""
+    if not gw:
+        return {"status": "error", "message": "Window inspection isn't available (pygetwindow missing)."}
+    try:
+        win = None
+        try:
+            win = gw.getActiveWindow()
+        except Exception:
+            win = None
+        if not win:
+            try:
+                for w in gw.getAllWindows():
+                    if getattr(w, "title", "") and getattr(w, "isActive", False):
+                        win = w
+                        break
+            except Exception:
+                win = None
+        if not win:
+            return {"status": "ok", "foreground": None, "message": "No active foreground window detected right now."}
+        info = {
+            "title": getattr(win, "title", "") or "",
+            "minimized": bool(getattr(win, "isMinimized", False)),
+            "maximized": bool(getattr(win, "isMaximized", False)),
+            "bounds": {
+                "left": getattr(win, "left", None), "top": getattr(win, "top", None),
+                "width": getattr(win, "width", None), "height": getattr(win, "height", None),
+            },
+            "process_id": None, "process_name": None, "executable": None,
+        }
+        hwnd = getattr(win, "_hWnd", None)
+        if hwnd:
+            try:
+                import ctypes
+                from ctypes import wintypes
+                user32 = ctypes.windll.user32
+                user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+                _pid = wintypes.DWORD(0)
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(_pid))
+                info["process_id"] = int(_pid.value) or None
+            except Exception:
+                pass
+        if info["process_id"]:
+            try:
+                import psutil
+                p = psutil.Process(info["process_id"])
+                info["process_name"] = p.name()
+                try:
+                    info["executable"] = p.exe()
+                except Exception:
+                    info["executable"] = None
+            except Exception:
+                pass
+        title = info["title"] or "(untitled)"
+        proc = info["process_name"] or "unknown app"
+        pid = info["process_id"]
+        return {"status": "ok", "foreground": info,
+                "message": f'Foreground window: "{title}" ({proc}' + (f", pid {pid}" if pid else "") + ")."}
+    except Exception as e:
+        return {"status": "error", "message": f"Foreground inspection failed: {e}"}
+
+
 def _plan(args: Dict[str, Any]) -> Dict[str, Any]:
     cmd = _resolve_command(args)
+    if cmd in ("inspect_foreground", "foreground", "inspect", "active_window"):
+        return {"preview": "Inspect the foreground window (read-only)", "args": args}
     app = args.get("app") or args.get("title") or args.get("window") or "the foreground app"
     return {"preview": f"Send '{cmd or '(none)'}' to {app}", "args": args}
 
@@ -117,10 +190,14 @@ def _plan(args: Dict[str, Any]) -> Dict[str, Any]:
 def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     if dry_run:
         return {"status": "dry-run", "message": "Would send an app command", "plan": _plan(args)}
+
+    cmd = _resolve_command(args)
+    # READ-ONLY inspection has no side effects and doesn't need keyboard control.
+    if cmd in ("inspect_foreground", "foreground", "inspect", "active_window"):
+        return _inspect_foreground()
     if pyautogui is None:
         return {"status": "error", "message": "Keyboard control isn't available (pyautogui missing)."}
 
-    cmd = _resolve_command(args)
     if not cmd:
         return {"status": "error",
                 "message": "command required (e.g. save, save_as, print, next, prev, close_tab, zoom_in, fullscreen, close_app)."}
@@ -185,8 +262,9 @@ TOOL = Tool(
              "play_pause|mute|next|prev|top|bottom|address_bar|close_app> and app=<window/app name, partial ok> "
              "(omit app to act on whatever's in front). For next/prev add context=<doc|pdf|media|slideshow> so "
              "it picks page vs track vs slide. count=N repeats. close_app needs confirm=true. If the app can't "
-             "be focused it does NOT send keys (won't hit the wrong window). To OPEN an app/file use open_item; "
-             "to just focus/close a window use window_ops."),
+             "be focused it does NOT send keys (won't hit the wrong window). command='inspect_foreground' is a "
+             "READ-ONLY report of the active window (title, process name/PID, exe path, bounds) — no keystrokes. "
+             "To OPEN an app/file use open_item; to just focus/close a window use window_ops."),
     plan=_plan,
     run=_run,
 )
