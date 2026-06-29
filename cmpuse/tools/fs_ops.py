@@ -45,12 +45,17 @@ def _validate_path(path: str) -> Dict[str, Any]:
     if re.search(r'[\x00-\x1f]', path):
         return {"ok": False, "error": "Invalid path: contains control characters"}
     
+    # Expand ~ (home) and %ENV%/$ENV vars BEFORE normalizing, so paths like "~/Downloads/x.txt"
+    # resolve to the real home directory instead of a literal "~" folder under the cwd. Done after
+    # the traversal check so expansion can't smuggle in "..".
+    expanded = os.path.expanduser(os.path.expandvars(path))
+
     # Normalize the path
     try:
-        normalized = os.path.abspath(path)
+        normalized = os.path.abspath(expanded)
     except Exception as e:
         return {"ok": False, "error": f"Invalid path format: {e}"}
-    
+
     return {"ok": True, "normalized": normalized}
 
 
