@@ -123,6 +123,76 @@ def _gen_flux(prompt: str, size: str, n: int) -> List[bytes]:
     return out
 
 
+# ---- image EDIT (transform an existing image: de-age, restyle, change details) ----
+def _mime_for(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    return {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".webp": "image/webp", ".gif": "image/gif"}.get(ext, "image/png")
+
+
+def _read_image(path: str) -> Tuple[bytes, str, str]:
+    p = os.path.expanduser(str(path or "").strip().strip('"').strip("'"))
+    if not os.path.isfile(p):
+        raise RuntimeError(f"input image not found: {p}")
+    with open(p, "rb") as f:
+        return f.read(), _mime_for(p), os.path.basename(p)
+
+
+def _edit_gemini(image_bytes: bytes, mime: str, prompt: str) -> List[bytes]:
+    import requests
+    key = _env("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY")
+    if not key:
+        raise RuntimeError("no GEMINI/GOOGLE key")
+    model = os.getenv("AVA_IMAGE_GEMINI_MODEL", "gemini-3.1-flash-image")
+    b64 = base64.b64encode(image_bytes).decode()
+    r = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
+        headers={"Content-Type": "application/json"},
+        json={"contents": [{"parts": [
+            {"inline_data": {"mime_type": mime, "data": b64}},
+            {"text": prompt},
+        ]}]},
+        timeout=180,
+    )
+    if not r.ok:
+        raise RuntimeError(f"Gemini edit {r.status_code}: {r.text[:200]}")
+    out = []
+    for c in r.json().get("candidates", []):
+        for part in (c.get("content", {}) or {}).get("parts", []):
+            inline = part.get("inlineData") or part.get("inline_data")
+            if inline and inline.get("data"):
+                out.append(base64.b64decode(inline["data"]))
+    if not out:
+        raise RuntimeError("Gemini returned no edited image")
+    return out
+
+
+def _edit_openai(image_bytes: bytes, filename: str, prompt: str, size: str, n: int) -> List[bytes]:
+    import requests
+    key = _env("OPENAI_API_KEY")
+    if not key:
+        raise RuntimeError("no OPENAI_API_KEY")
+    model = os.getenv("AVA_IMAGE_OPENAI_MODEL", "gpt-image-2")
+    r = requests.post(
+        "https://api.openai.com/v1/images/edits",
+        headers={"Authorization": f"Bearer {key}"},
+        data={"model": model, "prompt": prompt, "size": size, "n": str(max(1, n))},
+        files={"image": (filename or "input.png", image_bytes, "image/png")},
+        timeout=180,
+    )
+    if not r.ok:
+        raise RuntimeError(f"OpenAI edit {r.status_code}: {r.text[:200]}")
+    out = []
+    for d in r.json().get("data", []):
+        if d.get("b64_json"):
+            out.append(base64.b64decode(d["b64_json"]))
+        elif d.get("url"):
+            out.append(requests.get(d["url"], timeout=120).content)
+    if not out:
+        raise RuntimeError("OpenAI returned no edited image")
+    return out
+
+
 _KEY_HINT = {
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY (or GOOGLE_API_KEY)",
@@ -146,13 +216,49 @@ def _plan(args: Dict[str, Any]) -> Dict[str, Any]:
 
 def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     action = (args.get("action") or "generate").lower()
-    if action not in ("generate", "create", "image", "draw"):
-        return {"status": "error", "message": f"Unknown action: {action}"}
-    prompt = args.get("prompt") or args.get("text") or args.get("description")
-    if not prompt:
-        return {"status": "error", "message": "Provide a prompt describing the image to generate."}
+    prompt = args.get("prompt") or args.get("text") or args.get("description") or args.get("instruction")
     size = args.get("size") or "1024x1024"
     n = int(args.get("n") or args.get("count") or 1)
+
+    # ---- EDIT an EXISTING image (de-age a photo, restyle, change details) ----
+    if action in ("edit", "edit_image", "modify", "transform", "img2img"):
+        img_path = args.get("image") or args.get("input") or args.get("file") or args.get("path")
+        if not img_path:
+            return {"status": "error", "message": "Provide args.image (path to the photo) and args.prompt (the change to make)."}
+        if not prompt:
+            return {"status": "error", "message": "Provide args.prompt describing the edit (e.g. 'make her look 20 years younger')."}
+        try:
+            image_bytes, mime, fname = _read_image(img_path)
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+        order = [p.strip() for p in os.getenv("AVA_IMAGE_EDIT_ORDER", "gemini,openai").split(",") if p.strip()]
+        if (args.get("provider") or "auto").lower() != "auto":
+            order = [str(args.get("provider")).lower()]
+        available = [p for p in order if _has_key(p)]
+        if not available:
+            return {"status": "error", "message": "No image-edit key set. Add GEMINI_API_KEY or OPENAI_API_KEY to AVA's .env."}
+        if dry_run:
+            return {"status": "dry-run", "message": f"Would edit {fname}: {str(prompt)[:80]}"}
+        errors = []
+        for provider in available:
+            try:
+                if provider == "gemini":
+                    images = _edit_gemini(image_bytes, mime, str(prompt))
+                elif provider == "openai":
+                    images = _edit_openai(image_bytes, fname, str(prompt), size, n)
+                else:
+                    continue
+                paths = _save(images, "ava_edit")
+                return {"status": "ok", "message": f"Edited image with {provider} → {paths[0]}", "provider": provider, "files": paths}
+            except Exception as e:
+                errors.append(f"{provider}: {e}")
+        return {"status": "error", "message": "Image edit failed. " + " | ".join(errors)[:500]}
+
+    # ---- GENERATE a new image from a text prompt (default) ----
+    if action not in ("generate", "create", "image", "draw"):
+        return {"status": "error", "message": f"Unknown action: {action}"}
+    if not prompt:
+        return {"status": "error", "message": "Provide a prompt describing the image to generate."}
 
     order = [p.strip() for p in os.getenv("AVA_IMAGE_ORDER", "openai,gemini,flux").split(",") if p.strip()]
     requested = (args.get("provider") or "auto").lower()
@@ -187,11 +293,13 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
 TOOL = Tool(
     name="image_ops",
     summary=(
-        "Generate images from a text prompt using the best available model, routed per request (OpenAI GPT Image 2, "
-        "Google Gemini/Imagen, or Flux via fal.ai). Action 'generate': args.prompt (required), optional "
-        "args.provider='auto'|'openai'|'gemini'|'flux', args.size='1024x1024' (or WxH), args.n=<count>. Saves PNGs to "
-        "~/Downloads/ava_images and returns their paths. Needs a provider API key in the environment (OPENAI_API_KEY, "
-        "GEMINI_API_KEY/GOOGLE_API_KEY, or FAL_KEY); if none is set it says which to add."
+        "Generate OR edit images with the best available model. action='generate' (default): args.prompt (required) "
+        "-> a new image from text. action='edit': args.image (path to an EXISTING photo) + args.prompt (the change, "
+        "e.g. 'make her look 20 years younger', restyle, fix, recolor) -> an edited image (image-to-image via Gemini "
+        "nano-banana or OpenAI gpt-image-2). Optional args.provider, args.size, args.n. Saves PNGs to "
+        "~/Downloads/ava_images and returns their paths. To make a 3D hologram of a photo, CHAIN: image_ops edit (de-age/"
+        "adjust) -> model3d_ops (image->3D .glb) -> scene3d (load the .glb into a 3D/AR scene). Needs OPENAI_API_KEY or "
+        "GEMINI_API_KEY/GOOGLE_API_KEY (FAL_KEY for Flux generate); if none is set it says which to add."
     ),
     plan=_plan,
     run=_run,
