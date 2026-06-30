@@ -12,6 +12,7 @@ _TOOL_MODULES = [
     "test_echo", "computer_use", "computer_use_control", "self_awareness",
     "self_mod", "profile_ops", "app_control", "file_resolve", "self_diagnostics",
     "image_ops", "model3d_ops", "web_builder", "scene3d", "web_search", "web_scrape",
+    "finance_ops",
 ]
 
 __all__ = []

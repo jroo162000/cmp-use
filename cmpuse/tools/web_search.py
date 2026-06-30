@@ -117,7 +117,13 @@ TOOL = Tool(
     summary=("Search the web (DuckDuckGo) and return an instant-answer abstract plus the top result "
              "titles, URLs, and snippets. Use it for current events, facts, 'tell me about X', "
              "'who/what is X', prices, news, and anything you don't already know — then answer from "
-             "the results. Args: query (str, required), max_results (int, default 5)."),
+             "the results. DEEP / MULTI-ENTITY SEARCHES: do NOT cram several things into one query. "
+             "When a task covers multiple entities (several states, companies, people, time periods), "
+             "run a SEPARATE specific search for EACH one (e.g. 'California income tax brackets', then "
+             "'New York income tax brackets'), and VARY the wording across attempts ('tax rate' vs "
+             "'brackets' vs 'filing requirements') to surface different sources — many specific, "
+             "slightly different queries beat one broad query. Args: query (str, required), "
+             "max_results (int, default 5)."),
     plan=_plan,
     run=_run,
 )
