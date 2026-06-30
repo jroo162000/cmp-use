@@ -9,3 +9,8 @@ pyttsx3==2.90
 SpeechRecognition==3.10.0
 openai==1.37.0
 edge-tts==6.1.10
+# web_scrape master-scraper readability engine (+ fallback)
+trafilatura==2.1.0
+readability-lxml==0.8.4.1
+lxml==6.1.1
+lxml_html_clean==0.4.5
