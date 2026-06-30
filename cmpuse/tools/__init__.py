@@ -11,7 +11,7 @@ _TOOL_MODULES = [
     "security_ops", "comm_ops", "calendar_ops", "voice_ops", "analysis_ops",
     "test_echo", "computer_use", "computer_use_control", "self_awareness",
     "self_mod", "profile_ops", "app_control", "file_resolve", "self_diagnostics",
-    "image_ops", "model3d_ops", "web_builder", "scene3d", "web_search",
+    "image_ops", "model3d_ops", "web_builder", "scene3d", "web_search", "web_scrape",
 ]
 
 __all__ = []

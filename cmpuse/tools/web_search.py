@@ -8,6 +8,7 @@ import urllib.parse
 import urllib.request
 
 from ..tool_registry import Tool, register
+from ..research_notes import save_note
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -98,6 +99,8 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     results = _web_results(query, max_results)
     if not results and not ia.get("abstract"):
         return {"status": "ok", "query": query, "abstract": "", "results": [], "message": "No web results found."}
+    _summary = ia.get("abstract") or (results[0].get("snippet") if results else "") or (results[0].get("title") if results else "")
+    save_note(query, _summary, ia.get("abstract_url") or (results[0].get("url") if results else ""), "web_search")
     return {
         "status": "ok",
         "query": query,
