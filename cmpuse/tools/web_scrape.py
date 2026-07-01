@@ -7,6 +7,7 @@ import os
 import re
 import time
 import urllib.request
+import urllib.parse
 
 from ..tool_registry import Tool, register
 from ..research_notes import save_note
@@ -110,6 +111,40 @@ def _extract(html: str, url: str) -> Dict[str, Any]:
     return _extract_trafilatura(html, url) or _extract_readability(html) or _extract_regex(html)
 
 
+# ---------------------------------------------------------------- links / portal detection
+def _extract_links(html: str, base_url: str):
+    out = []
+    seen = set()
+    for m in re.finditer(r'(?is)<a\s[^>]*href\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</a>', html or ""):
+        href = (m.group(1) or "").strip()
+        text = _clean(m.group(2))[:120]
+        low = href.lower()
+        if not href or low.startswith(("javascript:", "mailto:", "tel:", "#")):
+            continue
+        try:
+            absu = urllib.parse.urljoin(base_url, href).split("#")[0]
+        except Exception:
+            continue
+        if not absu.lower().startswith(("http://", "https://")) or absu in seen:
+            continue
+        seen.add(absu)
+        out.append({"url": absu, "text": text})
+        if len(out) >= 200:
+            break
+    return out
+
+
+def _is_portal(text: str, links) -> bool:
+    """A page that's mostly links and little content (a hub/portal), not a content page."""
+    tlen = len(text or "")
+    nlinks = len(links or [])
+    if nlinks >= 25 and tlen < 1200:
+        return True
+    if nlinks >= 12 and tlen < 400:
+        return True
+    return False
+
+
 # ---------------------------------------------------------------- tool
 def _plan(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"preview": f"Scrape: {args.get('url', '<url>')}", "args": args}
@@ -154,18 +189,29 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
         if r_html:
             d2 = _extract(r_html, url)
             if len((d2.get("text") or "")) > len(text):
-                data, text, rendered = d2, d2.get("text") or "", True
+                data, text, rendered, html = d2, d2.get("text") or "", True, r_html
+
+    links = _extract_links(html, url)
+    is_portal = _is_portal(text, links)
+    # PORTAL CRAWLING: when asked (links=true), return the page's links so the caller can drill into
+    # a portal's real content pages instead of stopping at a hub of links.
+    if str(args.get("links") or "").lower() in ("1", "true", "yes"):
+        return {"status": "ok", "url": url, "title": data.get("title", ""), "is_portal": is_portal,
+                "link_count": len(links), "links": links[:120], "text": text[:1500],
+                "engine": data.get("engine"), "rendered": rendered}
 
     if not text:
-        return {"status": "ok", "url": url, "title": data.get("title", ""), "text": "",
-                "engine": data.get("engine"), "rendered": rendered, "message": "No readable text extracted."}
+        return {"status": "ok", "url": url, "title": data.get("title", ""), "text": "", "is_portal": is_portal,
+                "link_count": len(links), "engine": data.get("engine"), "rendered": rendered,
+                "message": "No readable text extracted (may be a portal — re-scrape with links=true to crawl it)."}
     truncated = len(text) > max_chars
     text = text[:max_chars]
     save_note(data.get("title") or url, text[:1000], url, "web_scrape")
     return {
         "status": "ok", "url": url, "title": data.get("title", ""),
         "author": data.get("author", ""), "date": data.get("date", ""), "sitename": data.get("sitename", ""),
-        "engine": data.get("engine"), "rendered": rendered, "chars": len(text), "truncated": truncated, "text": text,
+        "engine": data.get("engine"), "rendered": rendered, "chars": len(text), "truncated": truncated,
+        "is_portal": is_portal, "link_count": len(links), "text": text,
     }
 
 
@@ -173,10 +219,14 @@ TOOL = Tool(
     name="web_scrape",
     summary=("Fetch a web page and extract its main readable article text + metadata (title, author, "
              "date) using a real readability engine (trafilatura, with readability-lxml fallback). "
-             "Use it to READ a source you found via web_search instead of relying on snippets. Args: "
-             "url (str, required), max_chars (int, default 6000), render (true to force a headless "
-             "JavaScript render for SPA/JS-heavy pages; auto-escalates if the static page is thin). "
-             "Findings are saved to your research notes."),
+             "Use it to READ a source you found via web_search instead of relying on snippets. Every "
+             "result includes is_portal + link_count. PORTAL CRAWLING: if a page is a PORTAL (a hub of "
+             "links with little content — is_portal true), don't stop there; re-scrape with links=true "
+             "to get its links, then scrape the specific content sub-pages you actually need. Args: "
+             "url (str, required), links (true -> return the page's links for crawling a portal), "
+             "max_chars (int, default 6000), render (true to force a headless JavaScript render for "
+             "SPA/JS-heavy pages; auto-escalates if the static page is thin). Findings are saved to "
+             "your research notes."),
     plan=_plan,
     run=_run,
 )
