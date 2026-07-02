@@ -99,6 +99,27 @@ def _vision_local(b64: str, question: str, mime: str) -> Optional[str]:
     return (((d.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip() or None
 
 
+def _vision_deepseek(b64: str, question: str, mime: str) -> Optional[str]:
+    """DeepSeek's OpenAI-compatible endpoint. Sits ahead of the local fallback so it's tried
+    before dropping to on-device inference. NOTE: DeepSeek must have a vision-capable model
+    behind the configured id (AVA_VISION_DEEPSEEK) for this to return a real description — a
+    text-only model will error, and the chain simply falls through to local."""
+    key = os.getenv("DEEPSEEK_API_KEY")
+    if not key:
+        return None
+    base = (os.getenv("DEEPSEEK_API_BASE") or "https://api.deepseek.com").rstrip("/")
+    model = os.getenv("AVA_VISION_DEEPSEEK", "deepseek-chat")
+    d = _http_json(
+        f"{base}/chat/completions",
+        {"Authorization": f"Bearer {key}"},
+        {"model": model, "max_tokens": 1000, "messages": [{"role": "user", "content": [
+            {"type": "text", "text": question},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+        ]}]},
+    )
+    return (((d.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip() or None
+
+
 def _vision_claude(b64: str, question: str, mime: str) -> Optional[str]:
     key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
     if not key:
@@ -123,7 +144,8 @@ def _vision_claude(b64: str, question: str, mime: str) -> Optional[str]:
 # for when every cloud provider is out of credit (needs a vision-capable model loaded there).
 # Returns {"ok", "provider", "text"} or {"ok": False, "errors": [...]}.
 _VISION_CHAIN = [("openai/gpt-4o", _vision_openai), ("gemini", _vision_gemini),
-                 ("claude", _vision_claude), ("local", _vision_local)]
+                 ("claude", _vision_claude), ("deepseek", _vision_deepseek),
+                 ("local", _vision_local)]
 
 
 def _describe_image(image_data: bytes, question: str, mime: str = "image/png") -> Dict[str, Any]:
