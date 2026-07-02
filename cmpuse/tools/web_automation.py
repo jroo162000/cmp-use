@@ -176,6 +176,69 @@ def _find_file_input(driver, descriptor=''):
         return None
 
 
+def _resolve_login_field(driver):
+    """Detect a login form on the page and return the username/email field element
+    (or None if no password field is present).  This enables AVA to automate login
+    flows: before typing the password, the caller should use this helper to locate the
+    username/email field and fill it first."""
+    _lazy()
+    try:
+        # If there's no password input on the page, it's not a login form.
+        password = driver.find_element(By.CSS_SELECTOR, 'input[type="password"]')
+        if not password.is_displayed():
+            return None
+    except Exception:
+        return None
+
+    # Common selectors for username/email fields, most-likely-first.
+    candidates = [
+        'input[name="username"]',
+        'input[name="email"]',
+        'input[name="login"]',
+        'input[name="user"]',
+        'input[name="loginfmt"]',   # Microsoft / Outlook
+        'input[name="userid"]',
+        'input[id*="username"]',
+        'input[id*="user-name"]',
+        'input[id*="email"]',
+        'input[id*="login"]',
+        'input[type="email"]',
+        'input[type="text"][autocomplete="username"]',
+        'input[type="text"][autocomplete="email"]',
+        'input[type="text"][name*="user"]',
+        'input[type="text"][name*="email"]',
+    ]
+    for sel in candidates:
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, sel)
+            if el.is_displayed():
+                return el
+        except Exception:
+            pass
+
+    # Fallback: any visible text input that appears before the password field.
+    js = r'''
+    const pw = document.querySelector('input[type="password"]');
+    if (!pw) return null;
+    const all = [...document.querySelectorAll('input:not([type=hidden]):not([type=password])')];
+    for (const el of all) {
+      if (el.closest('form') && el.closest('form').contains(pw)) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) return el;
+      }
+    }
+    for (const el of all) {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0 && el.offsetTop <= pw.offsetTop) return el;
+    }
+    return null;
+    '''
+    try:
+        return driver.execute_script(js)
+    except Exception:
+        return None
+
+
 def _find_clickable_by_text(driver, label):
     js = r'''
     const want = (arguments[0]||'').toLowerCase().trim();
@@ -388,6 +451,38 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
                 driver.execute_script("arguments[0].click();", el)
             time.sleep(2)
             return {"status": "ok", "message": f"Clicked '{label}'", "current_url": driver.current_url}
+
+        elif action in ("login", "signin", "authenticate"):
+            username_val = args.get("username") or args.get("user") or args.get("email") or ""
+            password_val = args.get("password") or args.get("pass") or ""
+            if not username_val or not password_val:
+                return {"status": "error", "message": "username and password are required for login action"}
+            user_field = _resolve_login_field(driver)
+            if not user_field:
+                return {"status": "error", "message": "No login form (password input) detected on this page"}
+            try:
+                pw_field = driver.find_element(By.CSS_SELECTOR, 'input[type="password"]')
+            except Exception:
+                return {"status": "error", "message": "Password field not found after resolving login form"}
+            _fill_element(driver, user_field, username_val)
+            time.sleep(0.3)
+            _fill_element(driver, pw_field, password_val)
+            time.sleep(0.4)
+            # Optionally click submit button if requested.
+            if args.get("submit", True):
+                submit_text = args.get("submit_text", "sign in") or "sign in"
+                bel = _find_clickable_by_text(driver, submit_text)
+                if bel:
+                    try:
+                        bel.click()
+                    except Exception:
+                        driver.execute_script("arguments[0].click();", bel)
+                    time.sleep(2)
+                else:
+                    # Fall back to pressing Enter in the password field.
+                    pw_field.send_keys(Keys.RETURN)
+                    time.sleep(2)
+            return {"status": "ok", "message": "Login fields filled", "current_url": driver.current_url}
 
         elif action in ("fill_form", "fill_and_submit"):
             fields = args.get("fields") or {}
