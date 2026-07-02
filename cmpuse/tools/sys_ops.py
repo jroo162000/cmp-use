@@ -147,3 +147,138 @@ DATETIME_TOOL = Tool(
 
 register(DATETIME_TOOL)
 
+
+def _event_log_plan(args: Dict[str, Any]) -> Dict[str, Any]:
+    return {"preview": "Read recent Windows event-log entries (read-only)", "args": args}
+
+
+def _event_log_run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
+    """Read recent Windows Event Log entries (System / Application) — READ-ONLY. This is what
+    'check the system logs' / 'look in the event logs for the restart error' actually means; it
+    is NOT a file, so it must never be treated as a filename. Filters by recency + level."""
+    if platform.system() != "Windows":
+        return {"status": "error", "message": "Event logs are a Windows feature; this machine isn't Windows."}
+    import subprocess
+    import json as _json
+
+    raw_log = str(args.get("log") or args.get("logname") or "System").strip().lower()
+    log = {"system": "System", "application": "Application", "app": "Application",
+           "setup": "Setup", "security": "Security"}.get(raw_log, "System")
+    try:
+        hours = max(1, min(int(args.get("hours") or 24), 168))
+    except Exception:
+        hours = 24
+    try:
+        limit = max(1, min(int(args.get("limit") or 25), 100))
+    except Exception:
+        limit = 25
+    level = str(args.get("level") or "error").strip().lower()
+    # Get-WinEvent levels: 1=Critical 2=Error 3=Warning 4=Information
+    level_set = {"error": "1,2", "critical": "1", "warning": "1,2,3", "warn": "1,2,3",
+                 "all": "", "info": ""}.get(level, "1,2")
+    level_clause = f"; Level=@({level_set})" if level_set else ""
+
+    ps = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        f"$since=(Get-Date).AddHours(-{hours});"
+        f"$ev=Get-WinEvent -FilterHashtable @{{LogName='{log}'; StartTime=$since{level_clause}}} -MaxEvents {limit} -ErrorAction SilentlyContinue;"
+        f"if(-not $ev){{ $ev=Get-WinEvent -LogName '{log}' -MaxEvents {limit} -ErrorAction SilentlyContinue }};"
+        "$ev | Select-Object @{N='time';E={$_.TimeCreated.ToString('s')}},"
+        "@{N='level';E={$_.LevelDisplayName}}, @{N='id';E={$_.Id}}, @{N='provider';E={$_.ProviderName}},"
+        "@{N='message';E={$m=($_.Message -replace '\\s+',' ');$m.Substring(0,[Math]::Min(300,$m.Length))}}"
+        " | ConvertTo-Json -Depth 3 -Compress"
+    )
+    try:
+        proc = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                              capture_output=True, text=True, timeout=25)
+        out = (proc.stdout or "").strip()
+        if not out:
+            return {"status": "ok", "log": log, "hours": hours, "level": level, "count": 0,
+                    "events": [], "message": f"No {level} entries in the {log} event log in the last {hours}h."}
+        data = _json.loads(out)
+        events = data if isinstance(data, list) else [data]
+        return {"status": "ok", "log": log, "hours": hours, "level": level,
+                "count": len(events), "events": events[:limit]}
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "message": "Reading the event log timed out."}
+    except Exception as e:
+        return {"status": "error", "message": f"Couldn't read the {log} event log: {e}"}
+
+
+EVENT_LOG_TOOL = Tool(
+    name="read_event_log",
+    summary="Read recent Windows EVENT LOG / system log entries (System or Application), read-only. "
+            "Use this for 'check the system logs', 'look in the event logs', 'event viewer', 'find "
+            "the error/restart/crash in the logs', or diagnosing why something failed. Args: "
+            "log=System|Application (default System), level=error|warning|critical|all (default "
+            "error), hours=N back (default 24), limit=N (default 25). 'system logs' is NOT a file "
+            "— never read it with a file tool.",
+    plan=_event_log_plan,
+    run=_event_log_run,
+)
+
+register(EVENT_LOG_TOOL)
+
+
+def _default_browser_plan(args: Dict[str, Any]) -> Dict[str, Any]:
+    return {"preview": "Detect the system's default web browser", "args": args}
+
+
+def _default_browser_run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
+    try:
+        browser_name = "Unknown"
+        prog_id = None
+
+        if platform.system() == "Windows":
+            import winreg
+            key_path = r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice"
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                    prog_id, _ = winreg.QueryValueEx(key, "ProgId")
+            except (FileNotFoundError, OSError):
+                pass
+
+            # Map known ProgIds to friendly names
+            mapping = {
+                "ChromeHTML": "Google Chrome",
+                "FirefoxURL-308046B0AF4A39CB": "Mozilla Firefox",
+                "MSEdgeHTM": "Microsoft Edge",
+                "IE.HTTP": "Internet Explorer",
+                "OperaStable": "Opera",
+                "BraveHTML": "Brave",
+                "VivaldiHTM": "Vivaldi",
+            }
+            if prog_id:
+                browser_name = mapping.get(prog_id, prog_id)
+        elif platform.system() == "Darwin":
+            import subprocess
+            result = subprocess.run(
+                ["defaultbrowser"], capture_output=True, text=True, timeout=5
+            )
+            browser_name = result.stdout.strip() or "Safari"
+        else:  # Linux
+            import subprocess
+            result = subprocess.run(
+                ["xdg-settings", "get", "default-web-browser"],
+                capture_output=True, text=True, timeout=5,
+            )
+            raw = result.stdout.strip()
+            if raw:
+                browser_name = raw.replace(".desktop", "").capitalize()
+            else:
+                browser_name = "Unknown"
+
+        return {"status": "ok", "default_browser": browser_name, "prog_id": prog_id}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to detect default browser: {str(e)}"}
+
+
+DEFAULT_BROWSER_TOOL = Tool(
+    name="get_default_browser",
+    summary="Identify the system's default web browser (e.g., Chrome, Firefox, Edge, Safari). Works on Windows via registry, macOS via defaultbrowser, and Linux via xdg-settings.",
+    plan=_default_browser_plan,
+    run=_default_browser_run,
+)
+
+register(DEFAULT_BROWSER_TOOL)
+
