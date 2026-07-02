@@ -77,7 +77,9 @@ def _vision_local(b64: str, question: str, mime: str) -> Optional[str]:
     if os.getenv("AVA_LOCAL_LLM_OFF") == "1":
         return None
     base = (os.getenv("AVA_LOCAL_LLM_URL") or "http://localhost:1234/v1").rstrip("/")
-    model = os.getenv("AVA_LOCAL_LLM_MODEL") or ""
+    # Vision uses its OWN model id (AVA_VISION_LOCAL_MODEL) — NOT the text fallback's
+    # AVA_LOCAL_LLM_MODEL, which points at a text-only model (qwen) that would 400 on an image.
+    model = os.getenv("AVA_VISION_LOCAL_MODEL") or ""
     if not model:
         # discover the loaded model; if the endpoint is down this raises quickly -> skipped.
         try:
