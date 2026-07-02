@@ -43,6 +43,13 @@ except Exception:
 
 from ..tool_registry import Tool, register
 
+# Post-action verification (Tier 2 #12): confirm the intended EFFECT, not just that the
+# input was sent. Optional import so computer_use still loads if the helper is missing.
+try:
+    from . import _action_verify as _AV
+except Exception:
+    _AV = None
+
 # Global control state for user takeover
 CONTROL = {"paused": False, "stop": False}
 
@@ -631,11 +638,44 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
         return {"status": "error", "message": f"computer_use error: {str(e)}"}
 
 
+# Which actions are worth auto-verifying, and the cheap default expectation for each — a
+# heuristic screen-change check (attaches verified/evidence, never flips status unless
+# CMPUSE_VERIFY_STRICT=1). click_text/wait_text already return found/timeout truthfully; here
+# we add did-anything-change evidence to the blind input actions. A caller (or the agent) can
+# pass an explicit args["verify"] expectation to make failure authoritative (status flips to
+# "unverified" so a click that hit nothing can't be reported as success).
+_VERIFY_DEFAULT = {
+    "type": {"screen_change": True},
+    "press_key": {"screen_change": True},
+    "hotkey": {"screen_change": True},
+    "click_text": {"screen_change": True},
+    "open_start": {"screen_change": True},
+}
+
+
+def _run_verified(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
+    """Wrap _run: snapshot before, dispatch, then confirm the effect landed (Tier 2 #12)."""
+    if dry_run or _AV is None or not _AV.enabled():
+        return _run(args, dry_run)
+    action = args.get("action", "")
+    explicit = isinstance(args.get("verify"), dict) and bool(args.get("verify"))
+    expect = dict(args["verify"]) if explicit else dict(_VERIFY_DEFAULT.get(action, {}))
+    if not expect:
+        return _run(args, dry_run)
+    region = args.get("region") if isinstance(args.get("region"), (list, tuple)) else None
+    before = _AV.snapshot(region=region)
+    result = _run(args, dry_run)
+    try:
+        return _AV.verdict(result, expect, before, explicit=explicit)
+    except Exception:
+        return result
+
+
 TOOL = Tool(
     name="computer_use",
     summary="Autonomous computer-use via screenshots, mouse clicks, and window targeting",
     plan=_plan,
-    run=_run,
+    run=_run_verified,
 )
 
 register(TOOL)

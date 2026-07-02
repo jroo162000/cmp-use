@@ -8,6 +8,11 @@ from typing import Any, Dict
 
 from ..tool_registry import Tool, register
 
+try:
+    from . import _action_verify as _AV  # Tier 2 #12: confirm the click had an effect
+except Exception:
+    _AV = None
+
 # Safety settings
 pyautogui.FAILSAFE = True  # Move mouse to corner to abort
 pyautogui.PAUSE = 0.1  # Small pause between actions
@@ -41,10 +46,32 @@ def _plan(args: Dict[str, Any]) -> Dict[str, Any]:
     else:
         return {"preview": f"Mouse action: {action}", "args": args}
 
+# Actions where "did anything change on screen" is a meaningful effect check. move/position
+# don't change the screen, so they're excluded. An explicit args["verify"] expectation always
+# takes precedence and makes a miss authoritative (status -> "unverified").
+_VERIFY_ACTIONS = {"click", "double_click", "right_click", "drag", "scroll"}
+
+
 def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     if dry_run:
         return {"status": "dry-run", "message": "Would perform mouse action", "plan": _plan(args)}
 
+    action = args.get("action", "move")
+    # Tier 2 #12 verification wrapper.
+    if _AV is not None and _AV.enabled():
+        explicit = isinstance(args.get("verify"), dict) and bool(args.get("verify"))
+        if explicit or action in _VERIFY_ACTIONS:
+            expect = dict(args["verify"]) if explicit else {"screen_change": True}
+            before = _AV.snapshot()
+            result = _run_raw(args)
+            try:
+                return _AV.verdict(result, expect, before, explicit=explicit)
+            except Exception:
+                return result
+    return _run_raw(args)
+
+
+def _run_raw(args: Dict[str, Any]) -> Dict[str, Any]:
     action = args.get("action", "move")
     x = args.get("x")
     y = args.get("y")

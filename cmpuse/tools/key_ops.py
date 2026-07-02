@@ -8,6 +8,11 @@ from typing import Any, Dict
 
 from ..tool_registry import Tool, register
 
+try:
+    from . import _action_verify as _AV  # Tier 2 #12: confirm the keystrokes had an effect
+except Exception:
+    _AV = None
+
 # Safety settings
 pyautogui.PAUSE = 0.1  # Small pause between actions
 
@@ -32,10 +37,31 @@ def _plan(args: Dict[str, Any]) -> Dict[str, Any]:
     else:
         return {"preview": f"Keyboard action: {action}", "args": args}
 
+# Typing/pressing should change the screen (a character appears, a menu opens). type a value
+# and you can verify text_appears; hold/release alone don't. Explicit args["verify"] overrides.
+_VERIFY_ACTIONS = {"type", "press", "hotkey", "type_with_delay"}
+
+
 def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     if dry_run:
         return {"status": "dry-run", "message": "Would perform keyboard action", "plan": _plan(args)}
 
+    action = args.get("action", "type")
+    # Tier 2 #12 verification wrapper.
+    if _AV is not None and _AV.enabled():
+        explicit = isinstance(args.get("verify"), dict) and bool(args.get("verify"))
+        if explicit or action in _VERIFY_ACTIONS:
+            expect = dict(args["verify"]) if explicit else {"screen_change": True}
+            before = _AV.snapshot()
+            result = _run_raw(args)
+            try:
+                return _AV.verdict(result, expect, before, explicit=explicit)
+            except Exception:
+                return result
+    return _run_raw(args)
+
+
+def _run_raw(args: Dict[str, Any]) -> Dict[str, Any]:
     action = args.get("action", "type")
     text = args.get("text", "")
     key = args.get("key", "")
