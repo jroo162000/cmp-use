@@ -69,6 +69,36 @@ def _vision_gemini(b64: str, question: str, mime: str) -> Optional[str]:
     return text or None
 
 
+def _vision_local(b64: str, question: str, mime: str) -> Optional[str]:
+    """Local LM Studio (OpenAI-compatible /chat/completions with image_url) — the last-resort
+    vision fallback for when every cloud provider is over quota. Needs a VISION-CAPABLE model
+    loaded in LM Studio (e.g. a Qwen2-VL or LLaVA GGUF); a text-only model will reject the image.
+    Fails fast (short connect timeout) if LM Studio isn't running, so it never hangs the chain."""
+    if os.getenv("AVA_LOCAL_LLM_OFF") == "1":
+        return None
+    base = (os.getenv("AVA_LOCAL_LLM_URL") or "http://localhost:1234/v1").rstrip("/")
+    model = os.getenv("AVA_LOCAL_LLM_MODEL") or ""
+    if not model:
+        # discover the loaded model; if the endpoint is down this raises quickly -> skipped.
+        try:
+            with urllib.request.urlopen(base + "/models", timeout=4) as r:
+                mj = _json.loads(r.read().decode("utf-8", errors="ignore"))
+            model = ((mj.get("data") or [{}])[0].get("id")) or "local-model"
+        except Exception:
+            return None  # LM Studio not reachable — treat as "no local provider", skip cleanly
+    key = os.getenv("AVA_LOCAL_LLM_KEY") or "lm-studio"
+    d = _http_json(
+        f"{base}/chat/completions",
+        {"Authorization": f"Bearer {key}"},
+        {"model": model, "max_tokens": 1000, "messages": [{"role": "user", "content": [
+            {"type": "text", "text": question},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+        ]}]},
+        timeout=120,  # local vision inference on CPU can be slow
+    )
+    return (((d.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip() or None
+
+
 def _vision_claude(b64: str, question: str, mime: str) -> Optional[str]:
     key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
     if not key:
@@ -87,10 +117,13 @@ def _vision_claude(b64: str, question: str, mime: str) -> Optional[str]:
     return text or None
 
 
-# Ordered vision chain — mirrors the server's LLM fallback intent. A provider with no key is
-# skipped; one that errors on quota/limit/auth is skipped to the next; the first to return real
-# text wins. Returns {"ok", "provider", "text"} or {"ok": False, "errors": [...]}.
-_VISION_CHAIN = [("openai/gpt-4o", _vision_openai), ("gemini", _vision_gemini), ("claude", _vision_claude)]
+# Ordered vision chain — mirrors the server's LLM fallback intent. A provider with no key (or an
+# unreachable local server) is skipped; one that errors on quota/limit/auth is skipped to the
+# next; the first to return real text wins. LOCAL LM Studio is LAST — the last-resort fallback
+# for when every cloud provider is out of credit (needs a vision-capable model loaded there).
+# Returns {"ok", "provider", "text"} or {"ok": False, "errors": [...]}.
+_VISION_CHAIN = [("openai/gpt-4o", _vision_openai), ("gemini", _vision_gemini),
+                 ("claude", _vision_claude), ("local", _vision_local)]
 
 
 def _describe_image(image_data: bytes, question: str, mime: str = "image/png") -> Dict[str, Any]:
