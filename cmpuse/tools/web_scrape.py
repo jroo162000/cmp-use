@@ -8,22 +8,53 @@ import re
 import time
 import urllib.request
 import urllib.parse
+from urllib.error import HTTPError
 
 from ..tool_registry import Tool, register
 from ..research_notes import save_note
+
+# Rate-limit-safe fallback configuration
+_RETRY_MAX = 3                       # maximum retries before giving up
+_RETRY_DELAY_BASE = 2.0            # base delay in seconds (doubles each retry)
+_DEFAULT_TIMEOUT = 20.0
+_RENDER_TIMEOUT = 35.0
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 
 # ---------------------------------------------------------------- fetch
-def _fetch(url: str, timeout: float = 20.0) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": _UA, "Accept-Language": "en-US,en;q=0.9"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read(4_000_000).decode("utf-8", errors="ignore")
+def _fetch(url: str, timeout: float = _DEFAULT_TIMEOUT) -> str:
+    """Fetch a URL with automatic retry on rate-limit/transient errors."""
+    last_exc = None
+    delay = _RETRY_DELAY_BASE
+    for attempt in range(1, _RETRY_MAX + 1):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": _UA, "Accept-Language": "en-US,en;q=0.9"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read(4_000_000).decode("utf-8", errors="ignore")
+        except HTTPError as e:
+            last_exc = e
+            if e.code in (429, 503, 502, 504):
+                if attempt == _RETRY_MAX:
+                    raise
+                retry_after = e.headers.get("Retry-After")
+                sleep_secs = max(delay, int(retry_after)) if retry_after and retry_after.isdigit() else delay
+                time.sleep(sleep_secs)
+                delay *= 2
+            else:
+                raise
+        except Exception as e:
+            last_exc = e
+            if attempt == _RETRY_MAX:
+                raise
+            time.sleep(delay)
+            delay *= 2
+    # Should not reach here; guard against unexpected fall-through
+    raise last_exc if last_exc else RuntimeError(f"Fetch failed after {_RETRY_MAX} retries")
 
 
-def _render(url: str, timeout: float = 35.0) -> Optional[str]:
+def _render(url: str, timeout: float = _RENDER_TIMEOUT) -> Optional[str]:
     """Render a JavaScript page headlessly (undetected-chromedriver) and return the live DOM HTML.
     Used only when asked (render=true) — for SPAs / JS-heavy pages the static fetch can't see."""
     try:
@@ -179,7 +210,9 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
             html = _render(url)
             rendered = html is not None
             if html is None:
-                return {"status": "error", "message": f"fetch failed: {e}", "url": url}
+                # fetch already retried internally; if still failed, let the error propagate
+                exc_info = f"{type(e).__name__}: {e}"
+                return {"status": "error", "message": f"fetch failed after {_RETRY_MAX} retries: {exc_info}", "url": url}
 
     data = _extract(html, url)
     text = data.get("text") or ""

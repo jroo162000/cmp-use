@@ -12,6 +12,7 @@ import os
 import time
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -104,6 +105,47 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     ]
     report["recently_modified_count"] = len(recent)
 
+    # disk-space check (temp partition free bytes)
+    disk_ok = True
+    try:
+        usage = shutil.disk_usage(tempfile.gettempdir())
+        free_gb = usage.free / (1024**3)
+        if free_gb < 0.1:
+            disk_ok = False
+            free_mb = usage.free / (1024**2)
+            report["disk_space_warning"] = f"Only {free_mb:.1f} MB free on {tempfile.gettempdir()}"
+        else:
+            report["disk_free_gb"] = round(free_gb, 2)
+    except Exception as exc:
+        disk_ok = False
+        report["disk_space_warning"] = f"Cannot check disk usage: {exc}"
+
+    # file-write-access check (tempfile probe)
+    w_access = None
+    tmp = None
+    try:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".ava_diag")
+        tmp.write(b"AVA self-diagnostics write check\n")
+        tmp.close()
+        with open(tmp.name, "r") as fh:
+            content = fh.read()
+        if "self-diagnostics" in content:
+            w_access = True
+        else:
+            w_access = False
+        os.unlink(tmp.name)
+        tmp = None
+    except Exception as exc:
+        w_access = False
+        if tmp is not None:
+            try:
+                os.unlink(tmp.name)
+            except Exception:
+                pass
+        report["file_write_access_error"] = str(exc)
+    report["file_write_access"] = w_access
+    report["disk_space_ok"] = disk_ok
+
     # human summary
     n = len(recent)
     top = ", ".join(rel.replace("\\", "/") for _, rel in recent[:6])
@@ -116,6 +158,10 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
         msg = f"{n} of my source files were modified in the last {int(hours)}h (e.g. {top})."
     else:
         msg = f"No source files of mine were modified in the last {int(hours)}h."
+    if w_access is False:
+        msg += " ⚠ Cannot write temp files (permissions issue) — file generation may fail silently."
+    if disk_ok is False:
+        msg += " ⚠ Very low disk space — file/tool writes may fail."
     report["status"] = "ok"
     report["message"] = msg
     return report

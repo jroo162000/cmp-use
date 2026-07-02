@@ -84,6 +84,29 @@ def _plan(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"preview": f"fs {op}", "args": args}
 
 
+def _check_write_access(path: str) -> Dict[str, bool | str | None]:
+    """Probe whether the directory containing 'path' is writable by attempting a 0-byte open+close.
+    Returns dict with 'ok' (bool), 'error' (str or None), and 'path' (the directory checked)."""
+    d = os.path.dirname(path) or "."
+    # Review fix: if the target directory doesn't exist yet, don't probe (and don't fail) —
+    # the write path creates missing parent directories right after this check, so probing a
+    # not-yet-existing folder was wrongly rejecting writes that used to succeed.
+    if not os.path.isdir(d):
+        return {"ok": True, "error": None, "path": d}
+    probe = os.path.join(d, f"._avaw_test_{os.getpid()}.tmp")
+    try:
+        with open(probe, "w") as f:
+            f.write("")
+        os.remove(probe)
+        return {"ok": True, "error": None, "path": d}
+    except PermissionError as e:
+        return {"ok": False, "error": f"Permission denied writing to {d}: {e}", "path": d}
+    except OSError as e:
+        return {"ok": False, "error": f"OS error writing to {d}: {e}", "path": d}
+    except Exception as e:
+        return {"ok": False, "error": f"Unexpected error writing to {d}: {e}", "path": d}
+
+
 def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     cfg = Config.from_env()
     op = args.get("operation")
@@ -163,12 +186,17 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
         if _is_dangerous_extension(path):
             return {"status": "denied", "message": f"Cannot write executable files: {os.path.splitext(path)[1]}"}
 
+        # Proactive write-access check before attempting I/O
+        access = _check_write_access(path)
+        if not access["ok"]:
+            return {"status": "error", "message": access["error"], "write_access": access}
+
         content = args.get("content", "")
         is_append = (op == "append")
         existed = os.path.exists(path)
         if dry_run or cfg.dry_run:
             verb = "append to" if is_append else ("overwrite" if existed else "write")
-            return {"status": "dry-run", "message": f"Would {verb} {path}"}
+            return {"status": "dry-run", "message": f"Would {verb} {path}", "write_access": access}
 
         # Ensure parent directory exists
         parent = os.path.dirname(path)
@@ -188,12 +216,12 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
                     prefix = ""
             with open(path, "a", encoding="utf-8") as f:
                 f.write(prefix + content)
-            return {"status": "ok", "message": f"Appended {len(content)} characters to {path}"}
+            return {"status": "ok", "message": f"Appended {len(content)} characters to {path}", "write_access": access}
 
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         verb = "Overwrote" if existed else "Wrote"
-        return {"status": "ok", "message": f"{verb} {path} ({len(content)} characters)"}
+        return {"status": "ok", "message": f"{verb} {path} ({len(content)} characters)", "write_access": access}
     
     # Copy/Move operations
     if op in {"copy", "move"}:
@@ -220,15 +248,20 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
         if _is_forbidden_dir(dest):
             return {"status": "denied", "message": "Cannot copy/move to system directory"}
         
+        # Proactive write-access check on dest before attempting I/O
+        access = _check_write_access(dest)
+        if not access["ok"]:
+            return {"status": "error", "message": access["error"], "write_access": access}
+
         if dry_run or cfg.dry_run:
-            return {"status": "dry-run", "message": f"Would {op} {src} -> {dest}"}
+            return {"status": "dry-run", "message": f"Would {op} {src} -> {dest}", "write_access": access}
         
         import shutil
         if op == "copy":
             shutil.copy2(src, dest)
         else:
             shutil.move(src, dest)
-        return {"status": "ok", "message": f"{op} complete"}
+        return {"status": "ok", "message": f"{op} complete", "write_access": access}
     
     # Delete operation
     if op == "delete":

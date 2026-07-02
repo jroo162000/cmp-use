@@ -41,6 +41,101 @@ except Exception:  # pragma: no cover
     def _force_foreground(hwnd):  # type: ignore
         return False
 
+
+# ---------------------------------------------------------------------------
+# Foreground-window fallback using ctypes / win32gui (more reliable than
+# pygetwindow alone on modern Windows, especially for UWP/webview windows).
+# Falls back to pygetwindow if neither is available.
+# ---------------------------------------------------------------------------
+_FALLBACK_HAS_WIN32GUI = False
+_FALLBACK_HAS_CTYPES = False
+try:
+    import win32gui
+    import win32process
+    _FALLBACK_HAS_WIN32GUI = True
+except Exception:
+    pass
+try:
+    import ctypes
+    from ctypes import wintypes
+    _FALLBACK_HAS_CTYPES = True
+except Exception:
+    pass
+
+
+def _get_foreground_window() -> Dict[str, Any]:
+    """Return dict with 'title', 'process_name', 'process_id' at top level.
+    Uses win32gui if available (most reliable), then ctypes fallback,
+    then pygetwindow as last resort.  Never nested under 'foreground'."""
+    hwnd = 0
+    # ---- win32gui path (preferred) ----
+    if _FALLBACK_HAS_WIN32GUI:
+        try:
+            hwnd = win32gui.GetForegroundWindow()
+        except Exception:
+            pass
+
+    # ---- ctypes fallback (if win32gui missing) ----
+    if not hwnd and _FALLBACK_HAS_CTYPES:
+        try:
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+        except Exception:
+            pass
+
+    # ---- pygetwindow fallback ----
+    if not hwnd and gw:
+        try:
+            win = gw.getActiveWindow()
+            if win:
+                hwnd = getattr(win, '_hWnd', 0)
+        except Exception:
+            pass
+
+    if not hwnd:
+        return {"title": "", "process_name": "", "process_id": None}
+
+    title = ""
+    pid = None
+
+    if _FALLBACK_HAS_WIN32GUI:
+        try:
+            title = win32gui.GetWindowText(hwnd) or ""
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        except Exception:
+            pass
+    elif _FALLBACK_HAS_CTYPES:
+        try:
+            user32 = ctypes.windll.user32
+            length = user32.GetWindowTextLengthW(hwnd) + 1
+            buf = ctypes.create_unicode_buffer(length)
+            if user32.GetWindowTextW(hwnd, buf, length):
+                title = buf.value or ""
+            _pid = wintypes.DWORD(0)
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(_pid))
+            pid = int(_pid.value) or None
+        except Exception:
+            pass
+    else:
+        # final pygetwindow fallback for title
+        try:
+            win = gw.getActiveWindow()
+            if win:
+                title = getattr(win, "title", "") or ""
+        except Exception:
+            pass
+
+    process_name = ""
+    if pid is not None:
+        try:
+            import psutil
+            p = psutil.Process(pid)
+            process_name = p.name() or ""
+        except Exception:
+            pass
+
+    return {"title": title, "process_name": process_name, "process_id": pid}
+
 # command name -> hotkey (pyautogui key names). next/prev handled separately (context-aware).
 _COMMANDS = {
     "open_file": ["ctrl", "o"], "open": ["ctrl", "o"],
@@ -122,59 +217,77 @@ def _inspect_foreground() -> Dict[str, Any]:
     if not gw:
         return {"status": "error", "message": "Window inspection isn't available (pygetwindow missing)."}
     try:
-        win = None
-        try:
-            win = gw.getActiveWindow()
-        except Exception:
-            win = None
-        if not win:
+        # Primary path: use the new robust _get_foreground_window which chains
+        # win32gui -> ctypes -> pygetwindow and returns flat dict at top level.
+        fg = _get_foreground_window()
+        title = (fg.get("title") or "").strip()
+        pname = (fg.get("process_name") or "").strip()
+        pid = fg.get("process_id")
+
+        # If the robust path returned empty title/process_name, fall back to
+        # pygetwindow's richer metadata (bounds, etc.) but still use the flat
+        # dict shape — do NOT nest under 'foreground'.
+        if not title and not pname and gw:
             try:
-                for w in gw.getAllWindows():
-                    if getattr(w, "title", "") and getattr(w, "isActive", False):
-                        win = w
-                        break
-            except Exception:
-                win = None
-        if not win:
-            return {"status": "ok", "foreground": None, "message": "No active foreground window detected right now."}
-        info = {
-            "title": getattr(win, "title", "") or "",
-            "minimized": bool(getattr(win, "isMinimized", False)),
-            "maximized": bool(getattr(win, "isMaximized", False)),
-            "bounds": {
-                "left": getattr(win, "left", None), "top": getattr(win, "top", None),
-                "width": getattr(win, "width", None), "height": getattr(win, "height", None),
-            },
-            "process_id": None, "process_name": None, "executable": None,
-        }
-        hwnd = getattr(win, "_hWnd", None)
-        if hwnd:
-            try:
-                import ctypes
-                from ctypes import wintypes
-                user32 = ctypes.windll.user32
-                user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-                _pid = wintypes.DWORD(0)
-                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(_pid))
-                info["process_id"] = int(_pid.value) or None
+                win = gw.getActiveWindow()
+                if not win:
+                    for w in gw.getAllWindows():
+                        if getattr(w, "title", "") and getattr(w, "isActive", False):
+                            win = w
+                            break
+                if win:
+                    t = getattr(win, "title", "") or ""
+                    if t:
+                        title = t
+                        pid = pid or getattr(win, "_hWnd", None)
             except Exception:
                 pass
-        if info["process_id"]:
+
+        if not title and not pname:
+            return {"status": "ok", "title": "", "process_name": "", "process_id": None,
+                    "message": "No active foreground window detected right now."}
+
+        info = {
+            "title": title or "(untitled)",
+            "process_name": pname or "unknown app",
+            "process_id": pid,
+            "minimized": False,
+            "maximized": False,
+            "bounds": {"left": None, "top": None, "width": None, "height": None},
+            "executable": None,
+        }
+        # Attempt to fill bounds & minimized/maximized from pygetwindow if still available
+        if gw:
+            try:
+                wins = [w for w in gw.getAllWindows() if w.title and w.title.strip().lower() == title.lower()]
+                if wins:
+                    w = wins[0]
+                    info["minimized"] = bool(getattr(w, "isMinimized", False))
+                    info["maximized"] = bool(getattr(w, "isMaximized", False))
+                    info["bounds"]["left"] = getattr(w, "left", None)
+                    info["bounds"]["top"] = getattr(w, "top", None)
+                    info["bounds"]["width"] = getattr(w, "width", None)
+                    info["bounds"]["height"] = getattr(w, "height", None)
+            except Exception:
+                pass
+        # executable from psutil
+        if pid:
             try:
                 import psutil
-                p = psutil.Process(info["process_id"])
-                info["process_name"] = p.name()
+                p = psutil.Process(pid)
                 try:
                     info["executable"] = p.exe()
                 except Exception:
-                    info["executable"] = None
+                    pass
             except Exception:
                 pass
-        title = info["title"] or "(untitled)"
-        proc = info["process_name"] or "unknown app"
-        pid = info["process_id"]
-        return {"status": "ok", "foreground": info,
-                "message": f'Foreground window: "{title}" ({proc}' + (f", pid {pid}" if pid else "") + ")."}
+
+        proc = info["process_name"]
+        msg = f'Foreground window: "{info["title"]}" ({proc}'
+        if pid:
+            msg += f", pid {pid}"
+        msg += ")."
+        return {"status": "ok", "foreground": info, "message": msg}
     except Exception as e:
         return {"status": "error", "message": f"Foreground inspection failed: {e}"}
 

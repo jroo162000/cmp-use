@@ -4,10 +4,86 @@ Window Management Tool - Control application windows, minimize, maximize, focus,
 
 import pygetwindow as gw
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+import subprocess
+import json
+import os
+import ctypes
+from ctypes import wintypes
 
 from ..tool_registry import Tool, register
 
+
+_FG_CACHE: Optional[Dict[str, Any]] = None
+_FG_CACHE_TIME: float = 0
+_FG_TTL: float = 2.0
+
+
+def get_foreground_info(args: Dict[str, Any] = None, dry_run: bool = False) -> Dict[str, Any]:
+    """Return current foreground window info: title, process_name, window_handle, cached.
+    Uses win32gui/win32process with 2-second TTL cache. Safe to call from any context.
+    Pairs with _get_foreground_info for direct use via sendCommand('window_ops.get_foreground_info', {})."""
+    if dry_run:
+        return {"preview": "Get foreground window info", "args": args or {}}
+    try:
+        raw = _get_foreground_info()
+        hwnd = None
+        try:
+            import win32gui
+            hwnd = win32gui.GetForegroundWindow()
+        except Exception:
+            pass
+        return {
+            "title": raw.get("title", ""),
+            "process_name": raw.get("process_name", ""),
+            "window_handle": hwnd if hwnd else 0,
+            "cached": bool(_FG_CACHE and (time.time() - _FG_CACHE_TIME) < _FG_TTL)
+        }
+    except Exception as e:
+        return {"error": f"get_foreground_info failed: {str(e)}"}
+
+def _get_foreground_info() -> Dict[str, Any]:
+    """Return foreground window info: title, process name, PID, with 2s TTL cache.
+    Uses win32gui/win32process if available, falls back to PowerShell.
+    Callable via sendCommand('window_ops.get_foreground_info', {})."""
+    global _FG_CACHE, _FG_CACHE_TIME
+    now = time.time()
+    if _FG_CACHE and (now - _FG_CACHE_TIME) < _FG_TTL:
+        return _FG_CACHE.copy()
+    result = {"title": "", "process_name": "", "pid": 0}
+    try:
+        import win32gui
+        import win32process
+        import win32api
+        hwnd = win32gui.GetForegroundWindow()
+        if hwnd:
+            result["title"] = win32gui.GetWindowText(hwnd)
+            tid, pid = win32process.GetWindowThreadProcessId(hwnd)
+            result["pid"] = pid
+            try:
+                handle = win32api.OpenProcess(0x0400 | 0x0010, False, pid)
+                if handle:
+                    exe_name = win32process.GetModuleFileNameEx(handle, 0)
+                    result["process_name"] = os.path.basename(exe_name) if exe_name else ""
+                    win32api.CloseHandle(handle)
+            except Exception:
+                pass
+    except ImportError:
+        try:
+            cmd = ["powershell", "-Command",
+                   "Get-Process | Where-Object {$_.MainWindowHandle -ne 0} | "
+                   "Select-Object -First 1 Name,Id,MainWindowTitle | ConvertTo-Json"]
+            out = subprocess.check_output(cmd, timeout=2, stderr=subprocess.STDOUT).decode("utf-8", errors="replace").strip()
+            if out:
+                data = json.loads(out)
+                result["title"] = data.get("MainWindowTitle", "") or ""
+                result["process_name"] = data.get("Name", "") or ""
+                result["pid"] = data.get("Id", 0) or 0
+        except Exception:
+            pass
+    _FG_CACHE = result
+    _FG_CACHE_TIME = now
+    return result.copy()
 
 def _force_foreground(hwnd) -> bool:
     """Reliably bring a window to the foreground on Windows. SetForegroundWindow alone
@@ -131,6 +207,9 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
                 "count": len(window_list)
             }
 
+        if action == "get_foreground_info":
+            return get_foreground_info(args, dry_run)
+
         if action in ("active", "get_active", "foreground"):
             fg_title = ""
             try:
@@ -233,7 +312,8 @@ TOOL = Tool(
              "of whatever window is in front right now. To CLOSE an app/window pass action='close' and "
              "title=<app or window name> (partial, case-insensitive, e.g. title='paint'); closing sends a "
              "normal close so the app still prompts to save if needed. To send a SAVE/PRINT/NEXT-PAGE/etc. "
-             "command to an app, prefer app_control (it focuses first, then sends the command)."),
+             "command to an app, prefer app_control (it focuses first, then sends the command). "
+             "Also supports get_foreground_info action which returns title, process_name, window_handle, cached."),
     plan=_plan,
     run=_run,
 )

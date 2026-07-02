@@ -120,3 +120,30 @@ TOOL = Tool(
 
 register(TOOL)
 
+
+def _datetime_plan(args: Dict[str, Any]) -> Dict[str, Any]:
+    return {"preview": "Get current local date and time", "args": args}
+
+
+def _datetime_run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
+    import datetime
+    now = datetime.datetime.now().astimezone()
+    return {
+        "status": "ok",
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
+        "datetime": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "day_of_week": now.strftime("%A"),
+        "timezone": now.tzname() or "Unknown"
+    }
+
+
+DATETIME_TOOL = Tool(
+    name="get_current_datetime",
+    summary="Get the exact local date, time, day of the week, and timezone. Use this to ground yourself in real time before formulating time-sensitive web searches.",
+    plan=_datetime_plan,
+    run=_datetime_run,
+)
+
+register(DATETIME_TOOL)
+
