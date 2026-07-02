@@ -59,30 +59,32 @@ def _default_camera_path():
 
 
 def _describe_image_file(path):
-    """Describe an image with OpenAI GPT-4o vision. Returns a description, or None."""
+    """Describe an image via the shared vision provider fallback chain (OpenAI -> Gemini ->
+    Claude), so the camera's 'see' doesn't die when one provider is over quota. Returns a
+    description string, or None if no vision provider is available."""
     try:
         try:
             from cmpuse.secrets import load_into_env as _ls
-            _ls()  # ensure OPENAI_API_KEY is loaded from ~/.cmpuse/secrets.json into env
+            _ls()  # load API keys from ~/.cmpuse/secrets.json into env
         except Exception:
             pass
-        key = _os.getenv("OPENAI_API_KEY")
-        if not key:
-            return None
-        import base64 as _b64
-        from openai import OpenAI
-        client = OpenAI(api_key=key)
+        question = ("Describe what is shown in this image in 1-3 short, natural sentences: the "
+                    "setting, lighting, colors, and the main objects or activity visible. You may "
+                    "note generally if a person is present (e.g. 'someone is at a desk'), without "
+                    "identifying who they are.")
+        try:
+            from cmpuse.tools.vision_ops import _describe_image as _vision
+        except Exception:
+            _vision = None
         with open(path, "rb") as f:
-            b64 = _b64.b64encode(f.read()).decode()
-        resp = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": "Describe what is shown in this image in 1-3 short, natural sentences: the setting, lighting, colors, and the main objects or activity visible. You may note generally if a person is present (e.g. 'someone is at a desk'), without identifying who they are."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-            ]}],
-            max_tokens=200,
-        )
-        return (resp.choices[0].message.content or "").strip()
+            data = f.read()
+        low = str(path).lower()
+        mime = "image/jpeg" if low.endswith((".jpg", ".jpeg")) else ("image/webp" if low.endswith(".webp") else "image/png")
+        if _vision is not None:
+            r = _vision(data, question, mime)
+            if r.get("ok"):
+                return r["text"]
+        return None
     except Exception:
         return None
 from datetime import datetime
