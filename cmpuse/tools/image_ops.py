@@ -123,6 +123,61 @@ def _gen_flux(prompt: str, size: str, n: int) -> List[bytes]:
     return out
 
 
+# ---- LOCAL Stable-Diffusion provider (no API key, no cloud credit) ----
+# Talks to an Automatic1111-compatible HTTP API (A1111 / Forge / SD.Next) at
+# AVA_IMAGE_LOCAL_URL (default http://127.0.0.1:7860). Fails fast (short connect timeout) when
+# no local server is running, so it drops through to the cloud providers cleanly.
+def _local_base() -> str:
+    return (os.getenv("AVA_IMAGE_LOCAL_URL") or "http://127.0.0.1:7860").rstrip("/")
+
+
+def _local_common() -> Dict[str, Any]:
+    return {
+        "negative_prompt": os.getenv("AVA_IMAGE_LOCAL_NEG", ""),
+        "steps": int(os.getenv("AVA_IMAGE_LOCAL_STEPS", "28")),
+        "cfg_scale": float(os.getenv("AVA_IMAGE_LOCAL_CFG", "6.5")),
+        "sampler_name": os.getenv("AVA_IMAGE_LOCAL_SAMPLER", "DPM++ 2M Karras"),
+    }
+
+
+def _decode_b64_images(arr) -> List[bytes]:
+    out = []
+    for i in (arr or []):
+        try:
+            out.append(base64.b64decode(str(i).split(",", 1)[-1]))
+        except Exception:
+            pass
+    return out
+
+
+def _gen_local(prompt: str, size: str, n: int) -> List[bytes]:
+    import requests
+    w, h = _size_wh(size)
+    body = {"prompt": prompt, "width": w, "height": h, "batch_size": max(1, int(n)), **_local_common()}
+    r = requests.post(f"{_local_base()}/sdapi/v1/txt2img", json=body, timeout=(4, 300))
+    if not r.ok:
+        raise RuntimeError(f"local SD {r.status_code}: {r.text[:200]}")
+    out = _decode_b64_images(r.json().get("images"))
+    if not out:
+        raise RuntimeError("local SD returned no image")
+    return out
+
+
+def _edit_local(image_bytes: bytes, mime: str, prompt: str) -> List[bytes]:
+    import requests
+    b64 = base64.b64encode(image_bytes).decode()
+    body = {"init_images": [b64], "prompt": prompt,
+            "denoising_strength": float(os.getenv("AVA_IMAGE_LOCAL_DENOISE", "0.6")),
+            **_local_common()}
+    r = requests.post(f"{_local_base()}/sdapi/v1/img2img", json=body, timeout=(4, 300))
+    if not r.ok:
+        raise RuntimeError(f"local SD edit {r.status_code}: {r.text[:200]}")
+    out = _decode_b64_images(r.json().get("images"))
+    if not out:
+        raise RuntimeError("local SD returned no edited image")
+    return out
+
+
 # ---- image EDIT (transform an existing image: de-age, restyle, change details) ----
 def _mime_for(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
@@ -197,6 +252,7 @@ _KEY_HINT = {
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY (or GOOGLE_API_KEY)",
     "flux": "FAL_KEY (from fal.ai)",
+    "local": "a local Stable-Diffusion server (ComfyUI-with-A1111-API / Automatic1111 / Forge / SD.Next) at AVA_IMAGE_LOCAL_URL",
 }
 
 
@@ -207,6 +263,10 @@ def _has_key(provider: str) -> bool:
         return bool(_env("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"))
     if provider == "flux":
         return bool(_env("FAL_KEY", "FAL_API_KEY"))
+    if provider == "local":
+        # No key needed — just enabled (default on). Reachability is checked at call time,
+        # so a down server fails fast and drops through to the cloud providers.
+        return os.getenv("AVA_IMAGE_LOCAL_ENABLED", "1") != "0"
     return False
 
 
@@ -231,7 +291,7 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
             image_bytes, mime, fname = _read_image(img_path)
         except Exception as e:
             return {"status": "error", "message": str(e)}
-        order = [p.strip() for p in os.getenv("AVA_IMAGE_EDIT_ORDER", "gemini,openai").split(",") if p.strip()]
+        order = [p.strip() for p in os.getenv("AVA_IMAGE_EDIT_ORDER", "local,gemini,openai").split(",") if p.strip()]
         if (args.get("provider") or "auto").lower() != "auto":
             order = [str(args.get("provider")).lower()]
         available = [p for p in order if _has_key(p)]
@@ -242,7 +302,9 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
         errors = []
         for provider in available:
             try:
-                if provider == "gemini":
+                if provider == "local":
+                    images = _edit_local(image_bytes, mime, str(prompt))
+                elif provider == "gemini":
                     images = _edit_gemini(image_bytes, mime, str(prompt))
                 elif provider == "openai":
                     images = _edit_openai(image_bytes, fname, str(prompt), size, n)
@@ -260,7 +322,7 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     if not prompt:
         return {"status": "error", "message": "Provide a prompt describing the image to generate."}
 
-    order = [p.strip() for p in os.getenv("AVA_IMAGE_ORDER", "openai,gemini,flux").split(",") if p.strip()]
+    order = [p.strip() for p in os.getenv("AVA_IMAGE_ORDER", "local,openai,gemini,flux").split(",") if p.strip()]
     requested = (args.get("provider") or "auto").lower()
     if requested != "auto":
         order = [requested]
@@ -276,7 +338,7 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
 
     errors = []
     for provider in available:
-        fn = {"openai": _gen_openai, "gemini": _gen_gemini, "flux": _gen_flux}.get(provider)
+        fn = {"local": _gen_local, "openai": _gen_openai, "gemini": _gen_gemini, "flux": _gen_flux}.get(provider)
         if not fn:
             continue
         try:
@@ -298,8 +360,10 @@ TOOL = Tool(
         "e.g. 'make her look 20 years younger', restyle, fix, recolor) -> an edited image (image-to-image via Gemini "
         "nano-banana or OpenAI gpt-image-2). Optional args.provider, args.size, args.n. Saves PNGs to "
         "~/Downloads/ava_images and returns their paths. To make a 3D hologram of a photo, CHAIN: image_ops edit (de-age/"
-        "adjust) -> model3d_ops (image->3D .glb) -> scene3d (load the .glb into a 3D/AR scene). Needs OPENAI_API_KEY or "
-        "GEMINI_API_KEY/GOOGLE_API_KEY (FAL_KEY for Flux generate); if none is set it says which to add."
+        "adjust) -> model3d_ops (image->3D .glb) -> scene3d (load the .glb into a 3D/AR scene). Providers: a LOCAL "
+        "Stable-Diffusion server (Automatic1111/Forge/SD.Next at AVA_IMAGE_LOCAL_URL, default http://127.0.0.1:7860) is "
+        "tried FIRST when running — no key or cloud credit needed — then OpenAI (OPENAI_API_KEY), Gemini "
+        "(GEMINI_API_KEY/GOOGLE_API_KEY), and Flux (FAL_KEY, generate only). If none is available it says which to add."
     ),
     plan=_plan,
     run=_run,
