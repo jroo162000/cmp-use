@@ -36,7 +36,22 @@ try:
         pytesseract.get_tesseract_version()
         _HAS_TESS = True
     except Exception:
-        _HAS_TESS = False  # pytesseract present but tesseract binary missing / not on PATH
+        # Wrapper imported but tesseract.exe isn't on PATH — point it at the standard install
+        # location (the running worker may not have picked up a PATH change post-install).
+        import os as _os
+        for _cand in (
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            _os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+        ):
+            if _os.path.exists(_cand):
+                pytesseract.pytesseract.tesseract_cmd = _cand
+                break
+        try:
+            pytesseract.get_tesseract_version()
+            _HAS_TESS = True
+        except Exception:
+            _HAS_TESS = False  # pytesseract present but tesseract binary missing
 except Exception:
     _HAS_TESS = False
 
@@ -153,6 +168,105 @@ def _click(x: int, y: int, delay: float = 0.15, clicks: int = 1):
     x, y = _clamp_point(int(x), int(y))
     pyautogui.moveTo(x, y, duration=delay)
     pyautogui.click(x=x, y=y, clicks=clicks, button="left")
+
+
+# ---------------------------------------------------------------------------
+# Vision-grounded clicking: screenshot -> vision model returns the click point
+# of a described element -> move + click -> verify screen changed. This is the
+# GENERAL fallback for "click the thing that looks like X" when OCR (click_text)
+# and UI-Automation can't reach the element. Reuses vision_ops' provider chain.
+# ---------------------------------------------------------------------------
+
+def _to_frac(v, dim: int) -> float:
+    """Coerce a vision coordinate to a [0,1] fraction of the image dimension. Handles models
+    that answer with fractions (0-1), pixels (0-dim), or a 0-1000 normalized grid."""
+    try:
+        v = float(v)
+    except Exception:
+        return 0.0
+    if 0.0 <= v <= 1.0:
+        f = v
+    elif v <= dim:
+        f = v / float(dim)
+    else:
+        f = v / 1000.0
+    return max(0.0, min(1.0, f))
+
+
+def _parse_ground_json(text: str) -> Optional[Dict[str, Any]]:
+    """Pull the first {...} JSON object out of a vision reply."""
+    if not text:
+        return None
+    import json as _json, re as _re
+    m = _re.search(r"\{.*\}", text, _re.DOTALL)
+    if not m:
+        return None
+    frag = m.group(0)
+    try:
+        return _json.loads(frag)
+    except Exception:
+        try:
+            return _json.loads(frag.replace("'", '"'))
+        except Exception:
+            return None
+
+
+def _get_vision_describe():
+    """Reach vision_ops._describe_image (the provider fallback chain) robustly, despite the
+    tools package re-exporting each module as a Tool object."""
+    try:
+        import importlib
+        m = importlib.import_module("cmpuse.tools.vision_ops")
+        return getattr(m, "_describe_image", None)
+    except Exception:
+        return None
+
+
+def _vision_ground(description: str, region=None) -> Dict[str, Any]:
+    """Ask the vision provider chain for the click point of a described UI element. Returns
+    {ok, found, xf, yf (fractions 0-1), confidence, provider, img_w, img_h, raw}."""
+    describe = _get_vision_describe()
+    if describe is None:
+        return {"ok": False, "reason": "vision_ops unavailable"}
+    try:
+        from ..secrets import load_into_env
+        load_into_env()
+    except Exception:
+        pass
+    import io as _io
+    img = pyautogui.screenshot(region=tuple(region)) if region else pyautogui.screenshot()
+    W, H = img.size
+    buf = _io.BytesIO(); img.save(buf, format="PNG"); data = buf.getvalue()
+    prompt = (
+        "You are a precise UI-grounding model. In the attached screenshot, locate the single "
+        f"on-screen element that best matches this description: \"{description}\". "
+        "Reply with ONLY a compact JSON object, no prose. If you find it: "
+        "{\"found\": true, \"x\": <fraction 0..1 of image width>, "
+        "\"y\": <fraction 0..1 of image height>, \"confidence\": <0..1>}. "
+        "x,y are the CENTER of the element. If it is not visible: {\"found\": false}."
+    )
+    res = describe(data, prompt, "image/png")
+    if not res.get("ok"):
+        return {"ok": False, "reason": "no vision provider answered", "detail": res}
+    coords = _parse_ground_json(res.get("text", ""))
+    prov = res.get("provider")
+    if not coords or not coords.get("found"):
+        return {"ok": True, "found": False, "provider": prov, "raw": (res.get("text") or "")[:200]}
+    return {"ok": True, "found": True, "provider": prov,
+            "xf": coords.get("x"), "yf": coords.get("y"), "confidence": coords.get("confidence"),
+            "img_w": W, "img_h": H, "region": region}
+
+
+def _screens_differ(a, b, thresh: float = 2.5) -> bool:
+    """Cheap whole-image change check (mean channel difference) to sanity-verify a click did
+    something. Weak signal — reported, not used to gate success."""
+    try:
+        from PIL import ImageChops, ImageStat
+        diff = ImageChops.difference(a.convert("RGB"), b.convert("RGB"))
+        m = ImageStat.Stat(diff).mean
+        return (sum(m) / len(m)) > thresh
+    except Exception:
+        return False
 
 
 def _save_notepad_as(target_path: str) -> Dict[str, Any]:
@@ -447,6 +561,45 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
                 return {"status": "error", "message": "keys array required"}
             pyautogui.hotkey(*[str(k) for k in keys])
             return {"status": "ok", "message": f"Hotkey: {'+'.join([str(k) for k in keys])}"}
+
+        if action in ("click_target", "vision_click", "click_element"):
+            desc = str(args.get("target") or args.get("description") or args.get("text") or "").strip()
+            if not desc:
+                return {"status": "error", "message": "click_target needs a 'target' description of what to click"}
+            region = args.get("region")
+            if region and (not isinstance(region, (list, tuple)) or len(region) != 4):
+                return {"status": "error", "message": "region must be [left, top, width, height]"}
+            g = _vision_ground(desc, region)
+            if not g.get("ok"):
+                return {"status": "error", "found": False, "vision_available": False,
+                        "message": ("I couldn't use vision to locate that on screen — no vision "
+                                    "provider is available right now."), "detail": g.get("detail")}
+            if not g.get("found"):
+                return {"status": "ok", "found": False, "provider": g.get("provider"),
+                        "message": f"I looked with vision ({g.get('provider')}) but couldn't find \"{desc}\" on screen.",
+                        "raw": g.get("raw")}
+            base_x = region[0] if region else 0
+            base_y = region[1] if region else 0
+            x = int(base_x + _to_frac(g["xf"], g["img_w"]) * g["img_w"])
+            y = int(base_y + _to_frac(g["yf"], g["img_h"]) * g["img_h"])
+            x, y = _clamp_point(x, y)
+            try:
+                before = pyautogui.screenshot()
+            except Exception:
+                before = None
+            _click(x, y)
+            time.sleep(0.4)
+            changed = False
+            try:
+                if before is not None:
+                    changed = _screens_differ(before, pyautogui.screenshot())
+            except Exception:
+                pass
+            conf = g.get("confidence")
+            return {"status": "ok", "found": True, "x": x, "y": y, "provider": g.get("provider"),
+                    "confidence": conf, "screen_changed": changed,
+                    "message": (f"Clicked \"{desc}\" at ({x}, {y}) using vision "
+                                f"({g.get('provider')}, confidence {conf}); screen changed: {changed}.")}
 
         if action == "click_text":
             if not _HAS_TESS:
