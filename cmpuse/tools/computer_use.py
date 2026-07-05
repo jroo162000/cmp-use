@@ -30,9 +30,21 @@ import pygetwindow as gw
 from PIL import Image
 try:
     import pytesseract
-    _HAS_TESS = True
+    try:
+        # The wrapper importing is NOT enough — the tesseract.exe binary must exist too.
+        # Verify it so _HAS_TESS is honest and click_text can fail cleanly instead of throwing.
+        pytesseract.get_tesseract_version()
+        _HAS_TESS = True
+    except Exception:
+        _HAS_TESS = False  # pytesseract present but tesseract binary missing / not on PATH
 except Exception:
     _HAS_TESS = False
+
+_OCR_UNAVAILABLE_MSG = (
+    "OCR is unavailable on this machine (the Tesseract binary isn't installed). "
+    "I can't click by on-screen text right now. To switch a browser tab, use "
+    "window_ops action=focus_tab instead."
+)
 
 # Optional UI Automation
 try:
@@ -259,7 +271,7 @@ def _dialog_solve(args: Dict[str, Any]) -> Dict[str, Any]:
       interval: seconds between attempts (default 0.4)
     """
     if not _HAS_TESS:
-        return {"status": "error", "message": "pytesseract not installed"}
+        return {"status": "error", "message": _OCR_UNAVAILABLE_MSG, "ocr_available": False}
 
     targets = args.get('targets') or ["Save", "OK", "Yes", "Open", "Continue"]
     region = args.get('region')
@@ -438,7 +450,7 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
 
         if action == "click_text":
             if not _HAS_TESS:
-                return {"status": "error", "message": "pytesseract not installed"}
+                return {"status": "error", "message": _OCR_UNAVAILABLE_MSG, "ocr_available": False}
             target = str(args.get("text", ""))
             if not target:
                 return {"status": "error", "message": "text required"}
@@ -453,7 +465,7 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
 
         if action == "wait_text":
             if not _HAS_TESS:
-                return {"status": "error", "message": "pytesseract not installed"}
+                return {"status": "error", "message": _OCR_UNAVAILABLE_MSG, "ocr_available": False}
             target = str(args.get("text", ""))
             timeout = float(args.get("timeout", 8.0))
             region = args.get("region")
@@ -554,7 +566,7 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
 
         if action == "click_text":
             if not _HAS_TESS:
-                return {"status": "error", "message": "pytesseract not installed"}
+                return {"status": "error", "message": _OCR_UNAVAILABLE_MSG, "ocr_available": False}
             target = str(args.get("text", ""))
             if not target:
                 return {"status": "error", "message": "text required"}
@@ -585,7 +597,7 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
 
         if action == "wait_text":
             if not _HAS_TESS:
-                return {"status": "error", "message": "pytesseract not installed"}
+                return {"status": "error", "message": _OCR_UNAVAILABLE_MSG, "ocr_available": False}
             target = str(args.get("text", ""))
             timeout = float(args.get("timeout", 8.0))
             region = args.get("region")
