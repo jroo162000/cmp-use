@@ -360,6 +360,17 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
             windows = [w for w in all_windows if title_match.lower() in w.title.lower()]
 
         if not windows:
+            # No top-level window has this title. If the caller was trying to focus/select
+            # something and a browser is open, the target is very likely a browser TAB
+            # (whose title isn't a window title) — fall back to tab-cycling.
+            if action in ("focus", "select", "activate", "show"):
+                bh, _bt = _find_browser_window("")
+                if bh:
+                    ft = _focus_tab({"tab": title_match})
+                    if ft.get("found"):
+                        return ft
+                    # browser exists but no such tab — return the honest tab result, not a window error
+                    return ft
             return {"status": "error", "message": f"No window found matching: {title_match}"}
 
         # Use first matching window
