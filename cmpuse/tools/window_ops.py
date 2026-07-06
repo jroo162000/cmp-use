@@ -19,6 +19,27 @@ _FG_CACHE_TIME: float = 0
 _FG_TTL: float = 2.0
 
 
+def get_foreground(args: Dict[str, Any] = None, dry_run: bool = False) -> Dict[str, Any]:
+    """Return the active window's title and executable name using win32gui/win32process.
+    Uses a 2-second TTL cache for efficiency. This is AVA's single most impactful
+    environment-awareness primitive — it enables context-sensitive proactive behavior
+    without any new imports or architecture changes.
+    Returns {"title": str, "process_name": str, "pid": int, "cached": bool}.
+    Pairs with get_foreground_info which also returns window_handle and rect."""
+    if dry_run:
+        return {"preview": "Get foreground window title and executable", "args": args or {}}
+    try:
+        raw = _get_foreground_info()
+        return {
+            "title": raw.get("title", ""),
+            "process_name": raw.get("process_name", ""),
+            "pid": raw.get("pid", 0),
+            "cached": bool(_FG_CACHE and (time.time() - _FG_CACHE_TIME) < _FG_TTL)
+        }
+    except Exception as e:
+        return {"error": f"get_foreground failed: {str(e)}"}
+
+
 def _get_foreground_rect(hwnd: int) -> Dict[str, int]:
     """Return bounding rectangle of a window: left, top, right, bottom.
     Uses win32gui.GetWindowRect, returns zeros on failure."""
@@ -55,6 +76,25 @@ def get_foreground_info(args: Dict[str, Any] = None, dry_run: bool = False) -> D
         }
     except Exception as e:
         return {"error": f"get_foreground_info failed: {str(e)}"}
+
+def get_active_window() -> Optional[str]:
+    """Return the current foreground window title using pure Windows ctypes.
+    Uses user32.GetForegroundWindow + GetWindowTextLengthW + GetWindowTextW.
+    No dependencies beyond ctypes (which is stdlib). Returns None on any error."""
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length == 0:
+            return None
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        return buf.value
+    except Exception:
+        return None
+
 
 def _get_foreground_info() -> Dict[str, Any]:
     """Return foreground window info: title, process name, PID, with 2s TTL cache.

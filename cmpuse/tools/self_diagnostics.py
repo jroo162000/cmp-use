@@ -146,7 +146,159 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     report["file_write_access"] = w_access
     report["disk_space_ok"] = disk_ok
 
-    # human summary
+def _diagnose_network_latency(host: str = "google.com") -> dict:
+    """Ping `host` and return structured latency diagnostics.
+    Falls back to 8.8.8.8 if original host resolution fails."""
+    import socket
+    result = {
+        "host": host,
+        "resolved_ip": None,
+        "avg_ms": None,
+        "packet_loss": None,
+        "timestamp": time.time(),
+    }
+    try:
+        result["resolved_ip"] = socket.gethostbyname(host)
+    except socket.gaierror:
+        # fallback to known working host
+        host = "8.8.8.8"
+        result["host"] = host
+        result["resolved_ip"] = host
+    try:
+        p = subprocess.run(
+            ["ping", "-n", "1", "-w", "3000", host],
+            capture_output=True, text=True, timeout=5
+        )
+        stdout = (p.stdout or "").lower()
+        if p.returncode == 0:
+            result["packet_loss"] = 0
+        else:
+            # parse loss percentage from stdout like "(0% loss)" sometimes appears
+            import re
+            m = re.search(r"\((\d+)% loss\)", stdout)
+            if m:
+                result["packet_loss"] = int(m.group(1))
+            else:
+                result["packet_loss"] = 100
+        # parse average round-trip time (ms) like "Average = 12ms" or "avg = 12.3ms"
+        for line in stdout.splitlines():
+            for marker in ["average", "avg", "round trip"]:
+                if marker in line:
+                    import re
+                    nums = re.findall(r"(\d+\.?\d*)\s*ms", line)
+                    if nums:
+                        result["avg_ms"] = round(float(nums[-1]), 1)
+                        break
+            if result["avg_ms"] is not None:
+                break
+        # if no explicit avg, use TTL-based heuristic (cannot get real RTT)
+        if result["avg_ms"] is None and p.returncode == 0:
+            result["avg_ms"] = 0
+    except Exception:
+        result["packet_loss"] = 100
+        result["avg_ms"] = None
+    return result
+
+
+def _diagnose_disk_health() -> dict:
+    """Return structured disk health using psutil, with fallback to wmic on Windows."""
+    result = {
+        "disk_usage": None,
+        "io_counters": None,
+        "fallback": None,
+    }
+    try:
+        import psutil
+        du = psutil.disk_usage("/")
+        result["disk_usage"] = {
+            "total_gb": round(du.total / (1024**3), 2),
+            "used_gb": round(du.used / (1024**3), 2),
+            "free_gb": round(du.free / (1024**3), 2),
+            "percent": du.percent,
+        }
+        io = psutil.disk_io_counters()
+        if io:
+            result["io_counters"] = {
+                "read_bytes": io.read_bytes,
+                "write_bytes": io.write_bytes,
+                "read_count": io.read_count,
+                "write_count": io.write_count,
+            }
+    except ImportError:
+        # fallback: use wmic on Windows
+        try:
+            out = subprocess.check_output(
+                "wmic logicaldisk get size,freespace",
+                shell=True, text=True, timeout=5
+            )
+            lines = [l.strip() for l in out.splitlines() if l.strip()]
+            if len(lines) >= 2:
+                # first line is header, rest are data
+                disks = []
+                for line in lines[1:]:
+                    parts = line.split()
+                    if len(parts) == 2:
+                        size, free = parts
+                        try:
+                            total_gb = round(int(size) / (1024**3), 2)
+                            free_gb = round(int(free) / (1024**3), 2)
+                            used_gb = round(total_gb - free_gb, 2)
+                            pct = round((used_gb / total_gb) * 100, 1) if total_gb > 0 else 0
+                            disks.append({
+                                "total_gb": total_gb,
+                                "used_gb": used_gb,
+                                "free_gb": free_gb,
+                                "percent": pct,
+                            })
+                        except (ValueError, ZeroDivisionError):
+                            pass
+                result["disk_usage"] = disks
+                result["fallback"] = "wmic"
+        except Exception as exc:
+            result["fallback"] = f"wmic error: {exc}"
+    except Exception as exc:
+        result["fallback"] = f"psutil error: {exc}"
+    return result
+
+
+    # ---- Live system metrics (CPU, RAM, uptime, network) ----
+    try:
+        import psutil
+        cpu_percent = psutil.cpu_percent(interval=0.5)
+        mem = psutil.virtual_memory()
+        uptime_seconds = time.time() - psutil.boot_time()
+        uptime_hours = uptime_seconds / 3600
+        # network connectivity check (ping a reliable host)
+        net_ok = False
+        try:
+            ret = subprocess.run(
+                ["ping", "-n", "1", "-w", "2000", "8.8.8.8"],
+                capture_output=True, timeout=3
+            )
+            net_ok = ret.returncode == 0
+        except Exception:
+            net_ok = False
+        # enhanced diagnostics: network latency + disk health
+        net_diag = _diagnose_network_latency("google.com")
+        disk_diag = _diagnose_disk_health()
+        report["system_metrics"] = {
+            "cpu_percent": round(cpu_percent, 1),
+            "ram_total_gb": round(mem.total / (1024**3), 2),
+            "ram_used_gb": round(mem.used / (1024**3), 2),
+            "ram_percent": round(mem.percent, 1),
+            "uptime_hours": round(uptime_hours, 2),
+            "network_reachable": net_ok,
+            "network_latency": net_diag,
+            "disk_health": disk_diag,
+        }
+    except ImportError:
+        report["system_metrics"] = {
+            "error": "psutil not available; install with 'pip install psutil'"
+        }
+    except Exception as exc:
+        report["system_metrics"] = {"error": f"Failed to collect metrics: {exc}"}
+
+    # human summary (extended with live metrics)
     n = len(recent)
     top = ", ".join(rel.replace("\\", "/") for _, rel in recent[:6])
     if report["is_git"] and report.get("recent_commits"):
@@ -162,6 +314,12 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
         msg += " ⚠ Cannot write temp files (permissions issue) — file generation may fail silently."
     if disk_ok is False:
         msg += " ⚠ Very low disk space — file/tool writes may fail."
+    metrics = report.get("system_metrics", {})
+    if "cpu_percent" in metrics:
+        msg += f" System: CPU {metrics['cpu_percent']}%, RAM {metrics['ram_percent']}% used, "
+        msg += f"uptime {metrics['uptime_hours']}h, network {'OK' if metrics['network_reachable'] else 'unreachable'}."
+    elif "error" in metrics:
+        msg += f" System metrics unavailable: {metrics['error']}"
     report["status"] = "ok"
     report["message"] = msg
     return report

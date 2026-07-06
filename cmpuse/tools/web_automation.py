@@ -569,6 +569,51 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
             return {"status": "ok", "current_url": driver.current_url, "title": driver.title,
                     "message": f"Currently on \"{driver.title}\" — {driver.current_url}"}
 
+        elif action in ("close_other_tabs", "close_other_browser_tabs", "tidy_tabs"):
+            keep_pattern = args.get("keep_url_pattern") or args.get("pattern") or ""
+            if not keep_pattern:
+                return {"status": "error", "message": "keep_url_pattern (URL or domain to keep) is required"}
+            handles = driver.window_handles
+            if len(handles) <= 1:
+                return {"status": "ok", "message": "Only one tab open; nothing to close"}
+            current_handle = driver.current_window_handle
+            keep = []
+            close = []
+            for h in handles:
+                try:
+                    driver.switch_to.window(h)
+                    url = driver.current_url
+                    if keep_pattern.lower() in url.lower():
+                        keep.append(url)
+                    else:
+                        close.append(url)
+                except Exception:
+                    close.append("<unreachable>")
+            if not close:
+                driver.switch_to.window(current_handle)
+                return {"status": "ok", "message": f"All {len(handles)} tab(s) match the keep pattern; nothing to close"}
+            # Close matching tabs (everything except those matching keep_pattern)
+            closed_count = 0
+            for h in list(driver.window_handles):
+                try:
+                    driver.switch_to.window(h)
+                    url = driver.current_url
+                    if keep_pattern.lower() not in url.lower():
+                        driver.close()
+                        closed_count += 1
+                except Exception:
+                    try:
+                        driver.close()
+                        closed_count += 1
+                    except Exception:
+                        pass
+            # Switch to first remaining tab
+            remaining = driver.window_handles
+            if remaining:
+                driver.switch_to.window(remaining[0])
+            return {"status": "ok", "message": f"Closed {closed_count} tab(s), kept {len(keep)} matching '{keep_pattern}'",
+                    "kept": keep, "closed": [u for u in close if u != '<unreachable>']}
+
         elif action in ("list_tabs", "tabs", "get_tabs"):
             handles = driver.window_handles
             cur = driver.current_window_handle
