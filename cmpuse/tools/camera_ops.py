@@ -162,18 +162,27 @@ class VisionMonitor:
         if self.is_monitoring:
             return {"status": "ok", "message": "Already monitoring"}
 
-        # Pick the preferred physical camera (e.g. the Logitech), not default index 0.
-        camera_index = _resolve_camera_index(camera_index)
-        self.camera_index = camera_index
-        # DirectShow backend: the default MSMF backend can BLOCK ~30s when opening the
-        # camera (which timed out "turn on the camera"); DSHOW returns promptly.
-        try:
-            self.camera = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-        except Exception:
-            self.camera = cv2.VideoCapture(camera_index)
+        # SHARED MODE first: the gaze tracker owns the webcam and publishes live
+        # frames; monitoring reads those instead of stealing the device, so her
+        # eye tracking keeps running while she watches the room.
+        self.shared_mode = False
+        frame, _age = _read_live_frame()
+        if frame is not None:
+            self.shared_mode = True
+            self.camera = None
+        else:
+            # Pick the preferred physical camera (e.g. the Logitech), not default index 0.
+            camera_index = _resolve_camera_index(camera_index)
+            self.camera_index = camera_index
+            # DirectShow backend: the default MSMF backend can BLOCK ~30s when opening the
+            # camera (which timed out "turn on the camera"); DSHOW returns promptly.
+            try:
+                self.camera = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+            except Exception:
+                self.camera = cv2.VideoCapture(camera_index)
 
-        if not self.camera or not self.camera.isOpened():
-            return {"status": "error", "message": f"Could not open camera {camera_index} (no camera detected)"}
+            if not self.camera or not self.camera.isOpened():
+                return {"status": "error", "message": f"Could not open camera {camera_index} (no camera detected)"}
 
         self._stop_event.clear()
         self.is_monitoring = True
@@ -186,8 +195,10 @@ class VisionMonitor:
 
         return {
             "status": "ok",
-            "message": "Vision monitoring started. I can now see continuously.",
-            "camera_index": camera_index
+            "message": "Vision monitoring started. I can now see continuously."
+                       + (" (sharing the gaze tracker's camera feed)" if self.shared_mode else ""),
+            "camera_index": camera_index,
+            "shared": self.shared_mode,
         }
 
     def stop(self) -> Dict[str, Any]:
@@ -214,13 +225,29 @@ class VisionMonitor:
 
         while not self._stop_event.is_set():
             try:
-                if not self.camera or not self.camera.isOpened():
-                    break
+                if getattr(self, "shared_mode", False):
+                    frame, _age = _read_live_frame()
+                    if frame is None:
+                        # tracker stopped publishing: fall back to owning the device
+                        try:
+                            self.camera = cv2.VideoCapture(_resolve_camera_index(self.camera_index), cv2.CAP_DSHOW)
+                        except Exception:
+                            self.camera = None
+                        if self.camera and self.camera.isOpened():
+                            self.shared_mode = False
+                        else:
+                            time.sleep(1.0)
+                            continue
+                        continue
+                    time.sleep(self.capture_interval)
+                else:
+                    if not self.camera or not self.camera.isOpened():
+                        break
 
-                ret, frame = self.camera.read()
-                if not ret:
-                    time.sleep(0.1)
-                    continue
+                    ret, frame = self.camera.read()
+                    if not ret:
+                        time.sleep(0.1)
+                        continue
 
                 current_time = time.time()
 
