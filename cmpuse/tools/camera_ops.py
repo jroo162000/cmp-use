@@ -10,6 +10,28 @@ np = lazy_module("numpy")
 import os as _os
 
 
+# ── Shared live frame (published by ava-integration/gaze_tracker.py) ─────────
+# The gaze tracker owns the webcam around the clock and publishes its latest
+# 720p frame every ~0.5s. Snapshot-style captures READ that frame instead of
+# opening the device (which would fail or steal it). Direct device access is
+# the automatic fallback when the tracker is off (AVA_GAZE_OFF=1) or stale.
+_LIVE_FRAME_PATH = _os.path.join(_os.path.expanduser("~"), ".cmpuse", "camera_live.jpg")  # note: only _os exists this early in the module
+_LIVE_FRAME_MAX_AGE_S = 3.0
+
+def _read_live_frame():
+    """Return (frame, age_s) from the tracker's shared frame, or (None, None)."""
+    try:
+        st = os.stat(_LIVE_FRAME_PATH)
+        age = time.time() - st.st_mtime
+        if age > _LIVE_FRAME_MAX_AGE_S or st.st_size < 1000:
+            return None, None
+        frame = cv2.imread(_LIVE_FRAME_PATH)
+        if frame is None or frame.size == 0:
+            return None, None
+        return frame, age
+    except Exception:
+        return None, None
+
 def _preferred_camera_name():
     # Which physical camera to prefer (substring match, case-insensitive). Defaults to
     # the user's Logitech; override with the AVA_CAMERA env var.
@@ -354,7 +376,13 @@ class CameraManager:
             self.camera = None
 
     def capture_frame(self):
-        """Capture a single frame"""
+        """Capture a single frame. Prefers the gaze tracker's shared live frame
+        (the tracker owns the webcam; grabbing the device here would conflict);
+        falls back to opening the device directly when the tracker is off."""
+        frame, age = _read_live_frame()
+        if frame is not None:
+            return frame
+
         if not self.camera or not self.camera.isOpened():
             self.open_camera()
 
