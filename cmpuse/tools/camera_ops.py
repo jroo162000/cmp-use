@@ -18,6 +18,27 @@ import os as _os
 _LIVE_FRAME_PATH = _os.path.join(_os.path.expanduser("~"), ".cmpuse", "camera_live.jpg")  # note: only _os exists this early in the module
 _LIVE_FRAME_MAX_AGE_S = 3.0
 
+_PAUSE_FLAG_PATH = _os.path.join(_os.path.expanduser("~"), ".cmpuse", "gaze_paused")
+
+def _set_camera_paused(paused):
+    """Camera OFF must mean the WHOLE stack: the gaze tracker owns the device,
+    so 'close' also drops this flag; the tracker sees it, releases the webcam
+    and deletes its published frame. Any camera-using action clears the flag
+    (asking her to look IS consent to use the camera again)."""
+    try:
+        if paused:
+            with open(_PAUSE_FLAG_PATH, "w") as fh:
+                fh.write(str(time.time()))
+            try:
+                os.remove(_LIVE_FRAME_PATH)
+            except Exception:
+                pass
+        else:
+            if os.path.exists(_PAUSE_FLAG_PATH):
+                os.remove(_PAUSE_FLAG_PATH)
+    except Exception:
+        pass
+
 def _read_live_frame():
     """Return (frame, age_s) from the tracker's shared frame, or (None, None)."""
     try:
@@ -539,6 +560,10 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     # action == "capture"; action == "see"; action == "describe"; action == "look"
     # action == "record_video"; action == "record"
     try:
+        if action in ("capture", "see", "describe", "look", "what_do_you_see", "describe_view",
+                      "start_monitoring", "detect_faces", "detect_hands", "detect_pose",
+                      "record_video", "record", "start_recording", "capture_video", "open"):
+            _set_camera_paused(False)   # using the camera = un-pausing the stack
         if action == "capture":
             camera_index = args.get("camera_index", 0)
             save_path = args.get("save_path")
@@ -724,7 +749,10 @@ def _run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
             if vision_monitor.is_monitoring:
                 vision_monitor.stop()
             camera_manager.close_camera()
-            return {"status": "ok", "message": "Camera closed"}
+            # and pause the gaze tracker - it owns the physical device, so
+            # without this the LED stays on and "camera off" would be a lie
+            _set_camera_paused(True)
+            return {"status": "ok", "message": "Camera closed (gaze tracking paused too - the whole camera stack is off)"}
 
         elif action == "start_monitoring":
             camera_index = args.get("camera_index", 0)
